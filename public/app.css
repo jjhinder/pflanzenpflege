@@ -53,7 +53,8 @@ html, body { margin: 0; }
 body { background: var(--bg); color: var(--ink); font: 16px/1.45 var(--font-body); -webkit-font-smoothing: antialiased; }
 html.locked, body.locked { overflow: hidden; }
 .wrap { max-width: 680px; margin: 0 auto; padding: 0 16px; }
-main { padding: calc(20px + env(safe-area-inset-top)) 0 calc(var(--nav-h) + 40px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 24px; }
+/* main.wrap, not main: .wrap sets padding too and would otherwise win, leaving the last items under the bottom bar */
+main.wrap { padding-top: calc(20px + env(safe-area-inset-top)); padding-bottom: calc(var(--nav-h) + 40px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 24px; }
 
 /* type */
 .kicker { margin: 0; font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }

@@ -1,5 +1,5 @@
 /* Service Worker: hält die App offline verfügbar. Daten- und KI-Anfragen gehen immer ans Netz, Fotos werden zwischengespeichert. */
-const CACHE = "pflanzenpflege-v2";
+const CACHE = "pflanzenpflege-v3";
 const PHOTOS = "pflanzenpflege-photos";
 const SHELL = ["/", "/index.html", "/app.css", "/app.js", "/runtime.js", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/apple-touch-icon.png"];
 
