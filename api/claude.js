@@ -3,6 +3,7 @@
 // Der Schlüssel liegt verschlüsselt auf dem Server und geht nie zurück an den Browser.
 import Anthropic from "@anthropic-ai/sdk";
 import { send, wrap, requireAuth, decrypt } from "../lib/core.js";
+import { record } from "../lib/usage.js";
 
 export const config = { maxDuration: 300 };
 
@@ -60,6 +61,8 @@ export default wrap(async function handler(req, res) {
       messages: [{ role: "user", content }]
     });
     const msg = await stream.finalMessage();
+    // Kosten mitschreiben (auch bei abgelehnten Anfragen, die Tokens werden trotzdem verrechnet)
+    try { await record(a.hh.id, msg.model || MODEL, msg.usage, String(body.feature || "")); } catch (e) { console.warn("Kosten nicht erfasst:", e && e.message); }
     if (msg.stop_reason === "refusal") return send(res, 422, { code: "refused" });
     const text = msg.content.filter(b => b.type === "text").map(b => b.text).join("");
     if (!json) return send(res, 200, { text });

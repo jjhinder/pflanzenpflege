@@ -247,6 +247,7 @@
       try { local.set(r.id, URL.createObjectURL(blob)); } catch { /* ignore */ }
       return { id: r.id };
     },
+    async remove(id) { await api("/api/photo", { body: { action: "delete", id } }); local.delete(id); },
     async get(id) {
       const r = await fetch(photoUrl(id), { credentials: "same-origin" });
       if (!r.ok) throw { code: "not_found" };
@@ -264,7 +265,7 @@
     const images = [];
     for (const b of (opts.images || []).slice(0, 4)) images.push(await toImage(b));
     try {
-      return await api("/api/claude", { body: { prompt: String(prompt), images, tier: opts.modelTier === "quick" ? "quick" : "default", json: !!json }, signal: opts.signal, quiet: true });
+      return await api("/api/claude", { body: { prompt: String(prompt), images, tier: opts.modelTier === "quick" ? "quick" : "default", json: !!json, feature: opts.feature || "" }, signal: opts.signal, quiet: true });
     } catch (e) {
       if (e && e.code === "signed_out") throw { code: "session_expired" };
       throw { code: (e && e.code) || "error" };
@@ -414,6 +415,7 @@
     async renameMe(name) { setMe(await api("/api/auth", { body: { action: "rename", name } })); },
     async setKey(key) { setMe(await api("/api/household", { body: { action: "setKey", key } })); },
     async removeKey() { setMe(await api("/api/household", { body: { action: "removeKey" } })); },
+    async usage() { return api("/api/household", { body: { action: "usage" } }); },
     async password(old, password) { await api("/api/auth", { body: { action: "password", old, password } }); },
     async logout() {
       try { await api("/api/auth", { body: { action: "logout" }, quiet: true }); } catch { /* trotzdem lokal abmelden */ }
@@ -421,6 +423,53 @@
       await cacheClear();
       location.hash = "";
       location.reload();
+    }
+  };
+
+  /* ---------- Erinnerungen per Push ---------- */
+  const b64ToBytes = s => {
+    const pad = "=".repeat((4 - (s.length % 4)) % 4);
+    const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(raw, c => c.charCodeAt(0));
+  };
+  const push = {
+    supported() { return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window; },
+    standalone() { return !!((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone); },
+    ios() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); },
+    permission() { return "Notification" in window ? Notification.permission : "unsupported"; },
+    async current() {
+      if (!push.supported()) return null;
+      const reg = await navigator.serviceWorker.ready;
+      return reg.pushManager.getSubscription();
+    },
+    /* Muss direkt aus einem Tipp aufgerufen werden (sonst fragt Safari nicht nach). */
+    async enable() {
+      if (!push.supported()) throw { code: "push_unsupported" };
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw { code: perm === "denied" ? "push_denied" : "push_dismissed" };
+      const { publicKey } = await api("/api/push");
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        // Mit einem anderen Server-Schlüssel angemeldet? Dann neu anmelden.
+        const k = sub.options && sub.options.applicationServerKey;
+        const same = k && btoa(String.fromCharCode(...new Uint8Array(k))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") === publicKey;
+        if (!same) { await sub.unsubscribe().catch(() => {}); sub = null; }
+      }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) });
+      await api("/api/push", { body: { action: "subscribe", sub: sub.toJSON() } });
+      return sub;
+    },
+    async disable() {
+      const sub = await push.current();
+      if (!sub) return;
+      try { await api("/api/push", { body: { action: "unsubscribe", endpoint: sub.endpoint } }); } catch { /* lokal trotzdem abmelden */ }
+      await sub.unsubscribe().catch(() => {});
+    },
+    async test() {
+      const sub = await push.current();
+      if (sub) await api("/api/push", { body: { action: "subscribe", sub: sub.toJSON() } }); // falls der Server das Gerät vergessen hat
+      return api("/api/push", { body: { action: "test", endpoint: sub ? sub.endpoint : undefined } });
     }
   };
 
@@ -570,7 +619,7 @@
         <p class="kicker">Umzug</p>
         <h1 class="headline" id="auth-title">Pflanzen <em>mitnehmen</em>?</h1>
         <p class="lede">In diesem Browser sind noch ${legacy.count === 1 ? "1 Pflanze" : legacy.count + " Pflanzen"} aus der früheren Version gespeichert, mit Fotos und Verlauf. Sollen sie in den Haushalt «${esc(me.household.name)}» übernommen werden?</p>
-        <section class="panel"><p class="muted small">Pflanzen, die es im Haushalt schon gibt, bleiben unverändert. Du kannst das auch später unter «Verlauf → Einstellungen» machen.</p>
+        <section class="panel"><p class="muted small">Pflanzen, die es im Haushalt schon gibt, bleiben unverändert. Du kannst das auch später im Profil oben rechts machen.</p>
         <p class="status" role="status"></p><p class="err" role="alert"></p>
         <div class="btn-row"><button class="btn primary" data-leg-yes>Übernehmen</button><button class="btn" data-leg-later>Später</button><button class="btn ghost" data-leg-no>Nein, nie</button></div></section>
       </div>`;
@@ -647,6 +696,8 @@
     legacy,
     migrateLegacy,
     account,
+    push,
+    deletePhoto: id => assets.remove(id),
     errText,
     exportData,
     importData

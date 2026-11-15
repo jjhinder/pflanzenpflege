@@ -1,7 +1,7 @@
 /* Service Worker: hält die App offline verfügbar. Daten- und KI-Anfragen gehen immer ans Netz, Fotos werden zwischengespeichert. */
-const CACHE = "pflanzenpflege-v3";
+const CACHE = "pflanzenpflege-v4";
 const PHOTOS = "pflanzenpflege-photos";
-const SHELL = ["/", "/index.html", "/app.css", "/app.js", "/runtime.js", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/apple-touch-icon.png"];
+const SHELL = ["/", "/index.html", "/app.css", "/app.js", "/runtime.js", "/schedule.js", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png", "/icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -31,4 +31,31 @@ self.addEventListener("fetch", e => {
       return res;
     }).catch(() => caches.match(req).then(r => r || (req.mode === "navigate" ? caches.match("/index.html") : Response.error())))
   );
+});
+
+/* Erinnerungen am Morgen */
+self.addEventListener("push", e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : "" }; }
+  const jobs = [self.registration.showNotification(d.title || "Pflanzen", {
+    body: d.body || "",
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: d.tag || "heute",
+    data: { url: d.url || "/#heute" }
+  })];
+  if (typeof d.badge === "number" && self.navigator && "setAppBadge" in self.navigator) {
+    jobs.push((d.badge ? self.navigator.setAppBadge(d.badge) : self.navigator.clearAppBadge()).catch(() => {}));
+  }
+  e.waitUntil(Promise.all(jobs));
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || "/#heute", self.location.origin).href;
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
+    for (const c of list) {
+      if (new URL(c.url).origin === self.location.origin && "focus" in c) { if ("navigate" in c) c.navigate(url).catch(() => {}); return c.focus(); }
+    }
+    return self.clients.openWindow(url);
+  }));
 });

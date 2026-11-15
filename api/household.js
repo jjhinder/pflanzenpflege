@@ -1,6 +1,7 @@
 // Haushalt verwalten: einladen, beitreten, verlassen, umbenennen und den eigenen Anthropic-Schlüssel hinterlegen.
 import Anthropic from "@anthropic-ai/sdk";
 import { cmd, pipe, getJson, pairs } from "../lib/store.js";
+import { usageView } from "../lib/usage.js";
 import { send, bodyOf, wrap, rid, requireAuth, tooMany, encrypt, saveHousehold, saveUser, newHousehold, meView } from "../lib/core.js";
 
 const INVITE_DAYS = 7;
@@ -94,6 +95,8 @@ export default wrap(async function handler(req, res) {
       await saveHousehold(hh);
       return ok(res, a);
     }
+    case "usage":
+      return send(res, 200, await usageView(hh.id));
     case "removeKey": {
       delete hh.key;
       await saveHousehold(hh);

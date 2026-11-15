@@ -8,8 +8,10 @@ import auth from "./api/auth.js";
 import household from "./api/household.js";
 import data from "./api/data.js";
 import photo from "./api/photo.js";
+import push from "./api/push.js";
+import cron from "./api/cron.js";
 
-const API = { "/api/claude": claude, "/api/auth": auth, "/api/household": household, "/api/data": data, "/api/photo": photo };
+const API = { "/api/claude": claude, "/api/auth": auth, "/api/household": household, "/api/data": data, "/api/photo": photo, "/api/push": push, "/api/cron": cron };
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = join(process.cwd(), "public");
