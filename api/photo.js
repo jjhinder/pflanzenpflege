@@ -1,6 +1,7 @@
 // Fotos des Haushalts.
 // GET  /api/photo?id=<id>                     → das Bild
 // POST /api/photo { id?, type, data(base64) } → { id }
+// POST /api/photo { action: "delete", id }     → Foto löschen
 import { randomBytes } from "node:crypto";
 import { cmd, pipe } from "../lib/store.js";
 import { send, bodyOf, wrap, requireAuth } from "../lib/core.js";
@@ -32,6 +33,12 @@ export default wrap(async function handler(req, res) {
   if (req.method !== "POST") return send(res, 405, { code: "method_not_allowed" });
 
   const b = bodyOf(req);
+  if (b.action === "delete") {
+    const del = String(b.id || "");
+    if (!ID_RE.test(del)) return send(res, 400, { code: "bad_request" });
+    await pipe(["DEL", `${H}:ph:${del}`], ["HDEL", H + ":phs", del]);
+    return send(res, 200, { ok: true });
+  }
   const id = b.id == null || b.id === "" ? randomBytes(16).toString("hex") : String(b.id);
   if (!ID_RE.test(id) || !TYPES.has(b.type) || typeof b.data !== "string") return send(res, 400, { code: "image_rejected" });
   const size = Math.floor(b.data.length * 3 / 4);

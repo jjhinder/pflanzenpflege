@@ -3,17 +3,18 @@ const LOGMAX = 150;
 const HEALTH = ["", "Kritisch", "Schwach", "Okay", "Gut", "Prächtig"];
 const LIGHT = ["Schatten", "Halbschatten", "Hell, indirekt", "Sonnig"];
 const AMOUNT = ["Wenig", "Mittel", "Viel", "Tauchen"];
-const EV = { water: "Gegossen", skip: "Verschoben", fert: "Gedüngt", check: "Check-in", repot: "Umgetopft", doctor: "Diagnose", scan: "Per Foto erfasst" };
-const PHOTO_TYPES = ["check", "doctor", "scan"];
+const EV = { water: "Gegossen", skip: "Verschoben", repotlater: "Umtopfen verschoben", cutting: "Ableger genommen", born: "Als Ableger gestartet", potted: "Eingetopft", photo: "Foto", fert: "Gedüngt", check: "Check-in", repot: "Umgetopft", doctor: "Diagnose", scan: "Per Foto erfasst" };
+const PHOTO_TYPES = ["check", "doctor", "scan", "photo"];
 const TREND = { besser: "besser als zuletzt", gleich: "unverändert", schlechter: "schlechter als zuletzt" };
 const CAM_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg>`;
-const VIEWS = ["heute", "pflanzen", "neu", "plan", "verlauf"];
+const VIEWS = ["heute", "pflanzen", "neu", "plan", "verlauf", "profil"];
 const CAL_DAYS = 120;
 const IC = {
   water: `<svg viewBox="0 0 24 24"><path d="M12 3.2c3.6 4.3 6.2 7.8 6.2 10.8a6.2 6.2 0 0 1-12.4 0c0-3 2.6-6.5 6.2-10.8z"/></svg>`,
   fert: `<svg viewBox="0 0 24 24"><path d="M6 21h12"/><path d="M7.5 21l1-9h7l1 9"/><path d="M9.5 12V8.5a2.5 2.5 0 0 1 5 0V12"/><path d="M12 3v2"/></svg>`,
   photo: `<svg viewBox="0 0 24 24"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.8l1.4-2h4.6l1.4 2h1.8A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg>`,
   crit: `<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>`,
+  repot: `<svg viewBox="0 0 24 24"><path d="M6 13h12l-1.4 7.5H7.4z"/><path d="M5 13h14"/><path d="M12 13V9"/><path d="M12 9c0-2.6 1.7-4.3 4.6-4.3 0 2.6-1.7 4.3-4.6 4.3z"/><path d="M9 4.5l-2 2 2 2"/></svg>`,
   check: `<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
 };
 const FEEY = {
@@ -36,7 +37,8 @@ const S = {
   acct: { invite: null, err: "", busy: "", keyEdit: false, pwEdit: false, nameEdit: false, leave: false },
   canWrite: true, plants: [], loaded: false, stale: false, dbMissing: false, dbError: null,
   names: {}, sheet: null, day: 0, filter: { q: "", room: "" }, plan: null, prevM: {},
-  settings: { photoCheckDays: 14 }, lastRoom: "",
+  settings: { photoCheckDays: 14, seasonal: true }, lastRoom: "",
+  push: { checked: false, busy: "", err: "", on: false }, usage: null, usageBusy: false,
   finder: { light: "Hell, indirekt", effort: "Normal", size: "Mittel (Tisch, Kommode)", room: "", pets: false, wish: "", have: "", busy: false, error: "", result: null }
 };
 const chains = {};
@@ -61,24 +63,19 @@ const photoUrl = id => window.PP.photoUrl(id);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const dateFmt = (s, opts) => new Date(utc(s)).toLocaleDateString("de-CH", Object.assign({ timeZone: "UTC" }, opts));
 
-function interval(p) { return clampInt(p.intervalDays, 1, 90, 7); }
-function baseNext(p) { return validYmd(p.lastWatered) ? addDays(p.lastWatered, interval(p)) : today(); }
-function nextWater(p) { const b = baseNext(p); return validYmd(p.snoozeUntil) && p.snoozeUntil > b ? p.snoozeUntil : b; }
-function dueIn(p) { return diffDays(today(), nextWater(p)); }
+/* Der Pflegeplan steht in schedule.js, damit die Erinnerungen am Morgen auf dem Server genau gleich rechnen. */
+const SC = window.PPSchedule;
+function interval(p) { return SC.intervalAt(p, today(), S.settings); }
+function nextWater(p) { return SC.nextWater(p, today(), S.settings); }
+function dueIn(p) { return SC.dueIn(p, today(), S.settings); }
+const inWater = p => SC.inWater(p);
+function repotDue(p) { return SC.repotDue(p, today()); }
 function moisture(p) {
   if (!validYmd(p.lastWatered)) return 0;
   const total = Math.max(1, diffDays(p.lastWatered, nextWater(p)));
   return Math.max(0, Math.min(1, diffDays(today(), nextWater(p)) / total));
 }
-function fertOcc(p, from, to) {
-  const f = clampInt(p.fertilizeDays, 0, 365, 0);
-  if (!f) return [];
-  let d = validYmd(p.lastFertilized) ? addDays(p.lastFertilized, f) : today();
-  if (d < from) d = from;
-  const out = [];
-  for (let i = 0; d <= to && i < 60; i++) { out.push(d); d = addDays(d, f); }
-  return out;
-}
+function fertOcc(p, from, to) { return SC.fertOcc(p, from, to, today(), S.settings); }
 const byRoom = (a, b) => (str(a.room, 60) || "~").localeCompare(str(b.room, 60) || "~", "de") || byName(a, b);
 function normProducts(a) {
   return (Array.isArray(a) ? a : []).map(x => typeof x === "string" ? { id: x, why: "" } : { id: str(x && x.id, 40), why: str(x && x.why, 160) })
@@ -88,11 +85,7 @@ function productsHtml(ps) {
   if (!ps || !ps.length) return "";
   return `<div><h3>Passende Produkte bei feey</h3><ul class="prods">${ps.map(x => `<li><a href="${feeyUrl(FEEY[x.id].path)}" target="_blank" rel="noopener noreferrer"><b>${esc(FEEY[x.id].name)}</b>${x.why ? `<span>${esc(x.why)}</span>` : ""}</a></li>`).join("")}</ul></div>`;
 }
-function fertDue(p) {
-  const f = clampInt(p.fertilizeDays, 0, 365, 0);
-  if (!f) return null;
-  return validYmd(p.lastFertilized) ? diffDays(today(), addDays(p.lastFertilized, f)) : 0;
-}
+function fertDue(p) { return SC.fertDue(p, today(), S.settings); }
 function hashStr(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
 function lastPhoto(p) { return logOf(p).find(e => typeof e.photoId === "string" && PHOTO_TYPES.includes(e.type)) || null; }
 function photoEvery(p) {
@@ -114,13 +107,7 @@ function camButtons(prefix, extraAttr = "") {
   return `<input id="${prefix}-cam" class="vh" type="file" accept="image/*" capture="environment"${extraAttr}><label class="btn primary big" for="${prefix}-cam">${CAM_ICON}Foto aufnehmen</label>
     <input id="${prefix}-lib" class="vh" type="file" accept="image/*"${extraAttr}><label class="btn" for="${prefix}-lib">Aus Fotos wählen</label>`;
 }
-function occurrences(p, from, to) {
-  const out = [];
-  let d = nextWater(p);
-  if (d < from) d = from;
-  for (let i = 0; d <= to && i < 120; i++) { out.push(d); d = addDays(d, interval(p)); }
-  return out;
-}
+function occurrences(p, from, to) { return SC.waterOcc(p, from, to, today(), S.settings); }
 function fmtDate(s) {
   if (!validYmd(s)) return "–";
   const [y, m, d] = s.split("-").map(Number);
@@ -226,7 +213,7 @@ async function makeSketch(id, blob) {
     if (!img && p.photoId && S.imgLimits) {
       try { const r = await fetch(photoUrl(p.photoId)); if (r.ok) img = await r.blob(); } catch { img = null; }
     }
-    const opts = { modelTier: "default", cache: false };
+    const opts = { modelTier: "default", cache: false, feature: "sketch" };
     if (img && S.imgLimits) opts.images = [img];
     const res = await S.sample(sketchPrompt(p, !!opts.images), opts);
     const m = String(res && res.text || "").match(/<svg[\s\S]*?<\/svg>/i);
@@ -318,7 +305,12 @@ function season() {
 function section(title, count, body, extra = "") {
   return `<section${extra}><h2>${esc(title)}${count != null ? `<span class="count">${count}</span>` : ""}</h2>${body}</section>`;
 }
-function kicker(text) { return `<p class="kicker">Pflanzenpflege · ${esc(text)}</p>`; }
+function meButton() {
+  const me = window.PP && window.PP.me;
+  const ini = me ? (me.user.name || "?").trim().charAt(0).toUpperCase() : "";
+  return `<a class="me-btn" href="#profil" aria-label="Profil und Einstellungen" title="Profil und Einstellungen"${view() === "profil" ? ' aria-current="page"' : ""}>${ini ? esc(ini) : `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg>`}</a>`;
+}
+function kicker(text) { return `<div class="top-row"><p class="kicker">Pflanzenpflege · ${esc(text)}</p>${meButton()}</div>`; }
 
 /* ---------- writing ---------- */
 function writeMsg(e) {
@@ -344,7 +336,7 @@ function writePlant(id, fn) {
 }
 async function createPlant(data, log) {
   const ref = S.db.collection("plants").doc();
-  await ref.set(Object.assign({}, data, { createdAt: new Date().toISOString(), log: log || [] }));
+  await ref.set(Object.assign({ intervalRef: today() }, data, { createdAt: new Date().toISOString(), log: log || [] }));
   return ref.id;
 }
 function mkEntry(type, extra) {
@@ -373,10 +365,16 @@ function logAction(id, type, patch, msg, extra) {
 function water(id) {
   const p = getP(id);
   if (!p) return;
-  logAction(id, "water", { lastWatered: today(), snoozeUntil: { __delete__: true } }, `${nm(p)} gegossen`, { late: Math.max(0, -dueIn(p)) });
+  logAction(id, "water", { lastWatered: today(), snoozeUntil: { __delete__: true } }, `${nm(p)} ${inWater(p) ? ": Wasser gewechselt" : "gegossen"}`.replace(" :", ":"), { late: Math.max(0, -dueIn(p)) });
 }
 const fertilize = id => logAction(id, "fert", { lastFertilized: today() }, `${nm(getP(id))} gedüngt`);
-const repot = id => logAction(id, "repot", { lastRepotted: today() }, `${nm(getP(id))} als umgetopft vermerkt`);
+const repot = id => logAction(id, "repot", { lastRepotted: today(), repotAfter: { __delete__: true } }, `${nm(getP(id))} als umgetopft vermerkt`);
+/* Umtopfen um ein halbes Jahr verschieben */
+function repotLater(id) {
+  const p = getP(id);
+  if (!p) return;
+  logAction(id, "repotlater", { repotAfter: SC.addMonths(today(), 6) }, `Umtopfen bei ${nm(p)} um ein halbes Jahr verschoben`);
+}
 function snooze(id, n) {
   const p = getP(id);
   if (!p) return;
@@ -419,14 +417,35 @@ async function deletePlant(id) {
     toast(`${name} gelöscht`);
   } catch (e) { writeErr(e); }
 }
-function snoozeHint(p) {
+/* Schlägt ein anderes Giessintervall vor, wenn die Erde oft noch feucht war oder ihr regelmässig früher oder später giesst. */
+function intervalHint(p) {
+  if (inWater(p)) return null;
   const since = str(p.intervalSetAt, 40);
-  const ev = logOf(p).filter(e => (e.type === "water" || e.type === "skip") && String(e.t) > since).slice(0, 6);
-  const skips = ev.filter(e => e.type === "skip");
-  if (skips.length < 2) return null;
-  const avg = skips.reduce((s, e) => s + clampInt(e.days, 1, 14, 1), 0) / skips.length;
-  const suggest = clampInt(interval(p) + Math.max(1, Math.round(avg)), 1, 90, interval(p));
-  return suggest > interval(p) ? { skips: skips.length, suggest } : null;
+  const ev = logOf(p).filter(e => (e.type === "water" || e.type === "skip") && String(e.t) > since).slice(0, 10);
+  const cur = interval(p);
+  const skips = ev.slice(0, 6).filter(e => e.type === "skip");
+  if (skips.length >= 2) {
+    const avg = skips.reduce((sum, e) => sum + clampInt(e.days, 1, 14, 1), 0) / skips.length;
+    const suggest = clampInt(cur + Math.max(1, Math.round(avg)), 1, 90, cur);
+    if (suggest > cur) return { kind: "moist", n: skips.length, suggest };
+  }
+  if (skips.length) return null;
+  const ws = ev.filter(e => e.type === "water" && validYmd(e.d)).map(e => e.d);
+  const gaps = [];
+  for (let i = 0; i + 1 < ws.length; i++) { const g = diffDays(ws[i + 1], ws[i]); if (g > 0) gaps.push(g); }
+  if (gaps.length < 3) return null;
+  const med = [...gaps].sort((x, y) => x - y)[Math.floor(gaps.length / 2)];
+  const h = clampInt(p.health, 0, 5, 0);
+  if (med <= cur - 2 && med <= cur * 0.8) return { kind: "early", n: gaps.length, suggest: clampInt(med, 1, 90, cur) };
+  if (med >= cur + 2 && med >= cur * 1.25 && !(h && h <= 2)) return { kind: "late", n: gaps.length, suggest: clampInt(med, 1, 90, cur) };
+  return null;
+}
+function hintHtml(p, hint) {
+  const cur = interval(p);
+  const text = hint.kind === "moist" ? `<strong>Die Erde war ${hint.n}× noch feucht.</strong> Giess lieber alle ${hint.suggest} statt alle ${cur} Tage.`
+    : hint.kind === "early" ? `<strong>Ihr giesst meist schon nach etwa ${hint.suggest} Tagen</strong>, nicht erst nach ${cur}. Soll der Plan das übernehmen?`
+    : `<strong>Ihr giesst meist erst nach etwa ${hint.suggest} Tagen</strong> statt nach ${cur}, und der Pflanze geht es gut. Soll der Plan das übernehmen?`;
+  return `<div class="hint"><p>${text}</p><div class="btn-row"><button class="btn primary sm" data-act="hint-accept" data-days="${hint.suggest}">Auf ${hint.suggest} Tage ändern</button><button class="btn ghost sm" data-act="hint-dismiss">Passt so</button></div></div>`;
 }
 
 /* ---------- photos ---------- */
@@ -459,9 +478,9 @@ async function uploadPhoto(fileOrBlob, alreadyShrunk) {
 function aiErr(e) {
   const c = e && e.code;
   return ({
-    not_granted: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn unter «Verlauf» bei «Einstellungen» ein.",
-    no_key: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn unter «Verlauf» bei «Einstellungen» ein.",
-    key_rejected: "Anthropic lehnt den hinterlegten Schlüssel ab. Ersetze ihn unter «Verlauf» bei «Einstellungen».",
+    not_granted: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn im Profil (oben rechts) unter «KI-Zugang» ein.",
+    no_key: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn im Profil (oben rechts) unter «KI-Zugang» ein.",
+    key_rejected: "Anthropic lehnt den hinterlegten Schlüssel ab. Ersetze ihn im Profil (oben rechts) unter «KI-Zugang».",
     no_credit: "Auf dem Anthropic-Konto deines Haushalts ist kein Guthaben mehr. Lade es auf console.anthropic.com auf.",
     network: "Keine Verbindung. Prüfe das Internet und versuch es nochmals.",
     sampling_disabled: "Claude ist für dieses Konto hier nicht verfügbar.",
@@ -484,7 +503,7 @@ Pflanzen:
 ${items.map((x, i) => `${i + 1}. ${x.name}${x.species ? ` (Art: ${x.species})` : ""}${x.room ? `, Raum: ${x.room}` : ""}`).join("\n")}
 
 Antworte nur mit einem JSON-Array mit genau ${items.length} Objekt(en), in derselben Reihenfolge, jedes in dieser Form:
-{"species": "botanischer Name", "intervalDays": ganze Zahl, "fertilizeDays": ganze Zahl, "light": "Schatten" | "Halbschatten" | "Hell, indirekt" | "Sonnig", "amount": "Wenig" | "Mittel" | "Viel" | "Tauchen", "careNote": "ein konkreter Pflegehinweis, max. 100 Zeichen"}
+{"species": "botanischer Name", "intervalDays": ganze Zahl, "fertilizeDays": ganze Zahl, "light": "Schatten" | "Halbschatten" | "Hell, indirekt" | "Sonnig", "amount": "Wenig" | "Mittel" | "Viel" | "Tauchen", "repotYears": ganze Zahl 1 bis 4 (wie oft umtopfen), "careNote": "ein konkreter Pflegehinweis, max. 100 Zeichen"}
 Schreibe Schweizer Hochdeutsch (ss statt ß). Ist eine Pflanze unklar, nimm die wahrscheinlichste Zimmerpflanze und erwähne das in careNote.`;
 }
 function normalizeProfile(o, base) {
@@ -496,17 +515,19 @@ function normalizeProfile(o, base) {
     fertilizeDays: clampInt(o.fertilizeDays, 0, 365, 0),
     light: LIGHT.includes(o.light) ? o.light : "Hell, indirekt",
     amount: AMOUNT.includes(o.amount) ? o.amount : "Mittel",
+    repotMonths: clampInt(o.repotYears, 1, 4, 2) * 12,
     careNote: str(o.careNote, 160)
   };
 }
 function identifyPrompt() {
   const se = season();
+  const rooms = roomList();
   return `Bestimme die Zimmerpflanze auf dem Foto und erstelle ein Pflegeprofil für eine Wohnung in der Schweiz.
 Aktueller Monat: ${se.name}. ${se.winter ? "Es ist Heizperiode: Giessintervalle eher länger als im Sommer, Düngen meist pausieren (fertilizeDays 0)." : "Wachstumszeit: normale Giessintervalle, Düngen alle 2 bis 4 Wochen üblich."}
 Achte auf Blattform, Wuchs, Musterung und Topfgrösse. Schätze auch den Zustand der Pflanze nach dem Foto.
 
 Antworte nur mit JSON in dieser Form:
-{"name": "gebräuchlicher deutscher Name", "species": "botanischer Name", "confidence": "hoch" | "mittel" | "tief", "alternatives": [{"name": "deutscher Name", "species": "botanischer Name"}], "intervalDays": ganze Zahl, "fertilizeDays": ganze Zahl, "light": "Schatten" | "Halbschatten" | "Hell, indirekt" | "Sonnig", "amount": "Wenig" | "Mittel" | "Viel" | "Tauchen", "careNote": "ein konkreter Pflegehinweis, max. 100 Zeichen", "health": ganze Zahl 1 bis 5 (1 kritisch, 5 prächtig), "healthNote": "kurze Einschätzung des sichtbaren Zustands, max. 120 Zeichen"}
+{"name": "gebräuchlicher deutscher Name", "species": "botanischer Name", "confidence": "hoch" | "mittel" | "tief", "alternatives": [{"name": "deutscher Name", "species": "botanischer Name"}], "intervalDays": ganze Zahl, "fertilizeDays": ganze Zahl, "light": "Schatten" | "Halbschatten" | "Hell, indirekt" | "Sonnig", "amount": "Wenig" | "Mittel" | "Viel" | "Tauchen", "repotYears": ganze Zahl 1 bis 4 (wie oft umtopfen), "careNote": "ein konkreter Pflegehinweis, max. 100 Zeichen", "location": "idealer Standort in der Wohnung, z. B. welches Fenster und wie weit davon weg, max. 120 Zeichen", "room": ${rooms.length ? `"der passendste Raum aus dieser Liste: ${rooms.map(r => r.replace(/"/g, "")).join(", ")}, oder leer, wenn keiner passt"` : `""`}, "health": ganze Zahl 1 bis 5 (1 kritisch, 5 prächtig), "healthNote": "kurze Einschätzung des sichtbaren Zustands, max. 120 Zeichen"}
 alternatives nur bei confidence "mittel" oder "tief", höchstens 2, sonst leeres Array.
 Ist auf dem Foto keine Pflanze zu erkennen, antworte nur mit {"error": "kurzer Grund"}.
 Schreibe Schweizer Hochdeutsch (ss statt ß).`;
@@ -514,8 +535,12 @@ Schreibe Schweizer Hochdeutsch (ss statt ß).`;
 function normalizeScan(o) {
   o = o && typeof o === "object" ? o : {};
   const name = str(o.name, 60) || str(o.species, 60) || "Neue Pflanze";
-  const base = normalizeProfile(o, { name, room: S.lastRoom || "", species: "" });
+  const rooms = roomList();
+  const suggested = rooms.includes(str(o.room, 60)) ? str(o.room, 60) : "";
+  const base = normalizeProfile(o, { name, room: S.lastRoom || suggested, species: "" });
   return Object.assign(base, {
+    spot: str(o.location, 160),
+    suggestedRoom: suggested,
     confidence: ["hoch", "mittel", "tief"].includes(o.confidence) ? o.confidence : "mittel",
     alternatives: (Array.isArray(o.alternatives) ? o.alternatives : [])
       .map(a => ({ name: str(a && a.name, 60), species: str(a && a.species, 80) })).filter(a => a.name).slice(0, 2),
@@ -625,19 +650,21 @@ function waterActs(p) {
 }
 function calendar() {
   const t = today(), end = addDays(t, CAL_DAYS - 1);
-  const wc = new Map(), fc = new Map();
+  const wc = new Map(), fc = new Map(), rc = new Map();
   S.plants.forEach(p => {
     occurrences(p, t, end).forEach(d => wc.set(d, (wc.get(d) || 0) + 1));
     fertOcc(p, t, end).forEach(d => fc.set(d, (fc.get(d) || 0) + 1));
+    const r = SC.repotNext(p, t);
+    if (r) { const d = r; if (d <= end) rc.set(d, (rc.get(d) || 0) + 1); }
   });
   const sel = addDays(t, S.day);
   const days = [...Array(CAL_DAYS)].map((_, i) => addDays(t, i));
   return `<div class="cal">
     <div class="cal-head"><span class="cal-month">${esc(dateFmt(sel, { month: "long", year: "numeric" }))}</span>${S.day ? `<button class="linkish" data-day="0">Zurück zu heute</button>` : `<span class="muted small">Wischen für die nächsten Monate</span>`}</div>
     <div class="strip hscroll" data-keep="strip" role="group" aria-label="Kalender der nächsten ${CAL_DAYS} Tage">${days.map((d, i) => {
-      const w = wc.get(d) || 0, f = fc.get(d) || 0, first = d.slice(8) === "01";
+      const w = wc.get(d) || 0, f = fc.get(d) || 0, r = rc.get(d) || 0, first = d.slice(8) === "01";
       const wd = i === 0 ? "Heute" : first ? dateFmt(d, { month: "short" }).replace(".", "") : dateFmt(d, { weekday: "short" }).replace(".", "");
-      return `<button class="day${first ? " mstart" : ""}" data-day="${i}" aria-pressed="${S.day === i}" aria-label="${esc(dayLabel(d))}: ${plural(w, "Pflanze giessen", "Pflanzen giessen")}${f ? `, ${f} düngen` : ""}"><span class="wd">${esc(wd)}</span><span class="dn">${Number(d.slice(8))}</span><span class="dc">${w || ""}${f ? `<i class="fd"></i>` : ""}</span></button>`;
+      return `<button class="day${first ? " mstart" : ""}" data-day="${i}" aria-pressed="${S.day === i}" aria-label="${esc(dayLabel(d))}: ${plural(w, "Pflanze giessen", "Pflanzen giessen")}${f ? `, ${f} düngen` : ""}${r ? `, ${r} umtopfen` : ""}"><span class="wd">${esc(wd)}</span><span class="dn">${Number(d.slice(8))}</span><span class="dc">${w || ""}${f ? `<i class="fd"></i>` : ""}${r ? `<i class="rd"></i>` : ""}</span></button>`;
     }).join("")}</div>
   </div>`;
 }
@@ -645,7 +672,18 @@ function dayTasks(d) {
   const isToday = d === today();
   const water = isToday ? S.plants.filter(p => dueIn(p) <= 0) : S.plants.filter(p => occurrences(p, today(), d).includes(d));
   const fert = isToday ? S.plants.filter(p => { const f = fertDue(p); return f !== null && f <= 0; }) : S.plants.filter(p => fertOcc(p, today(), d).includes(d));
-  return { water: water.sort(byRoom), fert: fert.sort(byRoom) };
+  const repot = isToday ? S.plants.filter(p => { const r = repotDue(p); return r !== null && r <= 0; }) : S.plants.filter(p => SC.repotNext(p, today()) === d);
+  return { water: water.sort(byRoom), fert: fert.sort(byRoom), repot: repot.sort(byRoom) };
+}
+/* Zahl auf dem App-Symbol (iPhone ab iOS 16.4, Android, Desktop) */
+let lastBadge = -1;
+function updateBadge() {
+  if (!("setAppBadge" in navigator) || !S.loaded) return;
+  const k = dayTasks(today());
+  const n = k.water.length + k.fert.length + k.repot.length;
+  if (n === lastBadge) return;
+  lastBadge = n;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
 }
 function taskItem(p, o) {
   const meta = o.meta ? o.meta(p) : esc(str(p.room, 60));
@@ -664,18 +702,18 @@ function renderToday() {
   const head = kicker(dateFmt(t, { weekday: "long", day: "numeric", month: "long" }));
   if (!S.plants.length) return `<header>${head}<h1 class="headline">Willkommen im <em>Pflanzenzimmer</em>.</h1></header>` + emptyState();
   const isToday = S.day === 0, d = addDays(t, S.day), W = S.canWrite && isToday;
-  const { water, fert } = dayTasks(d);
+  const { water, fert, repot } = dayTasks(d);
   const photo = isToday && canPhotoCheck() ? S.plants.filter(p => (photoDueIn(p) ?? 1) <= 0).sort(byRoom).slice(0, 6) : [];
   const sick = isToday ? S.plants.filter(p => { const h = clampInt(p.health, 0, 5, 0); return h && h <= 2 && !photo.includes(p); }).sort(byRoom) : [];
-  const parts = [water.length ? `${plural(water.length, "Pflanze", "Pflanzen")} giessen` : "", fert.length ? `${fert.length} düngen` : "", photo.length ? `${photo.length} fotografieren` : ""].filter(Boolean);
-  const n = water.length + fert.length + photo.length;
+  const parts = [water.length ? `${plural(water.length, "Pflanze", "Pflanzen")} giessen` : "", fert.length ? `${fert.length} düngen` : "", repot.length ? `${repot.length} umtopfen` : "", photo.length ? `${photo.length} fotografieren` : ""].filter(Boolean);
+  const n = water.length + fert.length + repot.length + photo.length;
   let h = "";
   if (isToday) {
     const title = n ? `Heute: <em>${plural(n, "Aufgabe", "Aufgaben")}</em>.` : `Heute ist <em>alles erledigt</em>.`;
     let lede = parts.join(", ");
     if (!n) {
-      const next = [...Array(CAL_DAYS - 1)].map((_, i) => addDays(t, i + 1)).find(x => { const k = dayTasks(x); return k.water.length || k.fert.length; });
-      if (next) { const k = dayTasks(next); lede = `Als Nächstes ${dayLabel(next) === "Morgen" ? "morgen" : `am ${dayLabel(next)}`}: ${[k.water.length ? `${plural(k.water.length, "Pflanze", "Pflanzen")} giessen` : "", k.fert.length ? `${k.fert.length} düngen` : ""].filter(Boolean).join(", ")}.`; }
+      const next = [...Array(CAL_DAYS - 1)].map((_, i) => addDays(t, i + 1)).find(x => { const k = dayTasks(x); return k.water.length || k.fert.length || k.repot.length; });
+      if (next) { const k = dayTasks(next); lede = `Als Nächstes ${dayLabel(next) === "Morgen" ? "morgen" : `am ${dayLabel(next)}`}: ${[k.water.length ? `${plural(k.water.length, "Pflanze", "Pflanzen")} giessen` : "", k.fert.length ? `${k.fert.length} düngen` : "", k.repot.length ? `${k.repot.length} umtopfen` : ""].filter(Boolean).join(", ")}.`; }
     }
     h += `<header>${head}<h1 class="headline">${title}</h1>${lede ? `<p class="lede">${esc(lede)}</p>` : ""}</header>`;
   } else {
@@ -685,7 +723,7 @@ function renderToday() {
   let cards = "";
   const late = water.filter(p => dueIn(p) < 0).length;
   cards += taskCard("water", "Giessen", isToday && late ? `${late} davon überfällig` : "Nach Raum sortiert", water, {
-    meta: p => [`Menge ${esc(String(p.amount || "Mittel").toLowerCase())}`, isToday && dueIn(p) < 0 ? `<span class="late">${esc(dueText(dueIn(p)))}</span>` : ""].filter(Boolean).join(" · "),
+    meta: p => [inWater(p) ? "Ableger im Wasser: Wasser wechseln" : `Menge ${esc(String(p.amount || "Mittel").toLowerCase())}`, isToday && dueIn(p) < 0 ? `<span class="late">${esc(dueText(dueIn(p)))}</span>` : ""].filter(Boolean).join(" · "),
     acts: W ? p => `<button class="linkish" data-snooze="${esc(p.id)}">noch feucht</button><button class="check" data-water="${esc(p.id)}" aria-label="${esc(nm(p))} gegossen" title="Gegossen">${IC.check}</button>` : null,
     footer: W && water.length > 1 ? `<button class="btn water block" data-water-all>Alle ${water.length} gegossen</button>` : ""
   });
@@ -693,6 +731,10 @@ function renderToday() {
     meta: p => esc(`alle ${clampInt(p.fertilizeDays, 0, 365, 0)} Tage`),
     acts: W ? p => `<button class="check fert" data-fert="${esc(p.id)}" aria-label="${esc(nm(p))} gedüngt" title="Gedüngt">${IC.check}</button>` : null,
     footer: W && fert.length > 1 ? `<button class="btn block" data-fert-all>Alle ${fert.length} gedüngt</button>` : ""
+  });
+  cards += taskCard("repot", "Umtopfen", isToday ? "Frühling und Sommer sind die beste Zeit" : "", repot, {
+    meta: p => esc(validYmd(p.lastRepotted) ? `Zuletzt umgetopft ${fmtDate(p.lastRepotted)}` : `Seit ${fmtDate(str(p.createdAt, 10))} in der Sammlung`),
+    acts: W ? p => `<button class="linkish" data-repot-later="${esc(p.id)}">später</button><button class="check fert" data-repot="${esc(p.id)}" aria-label="${esc(nm(p))} umgetopft" title="Umgetopft">${IC.check}</button>` : null
   });
   cards += taskCard("photo", "Foto-Check", "Ganze Pflanze bei Tageslicht. Claude vergleicht mit dem letzten Foto.", photo, {
     meta: p => { const last = lastPhoto(p); return esc(last && validYmd(last.d) ? `Letztes Foto ${ago(last.d)}` : "Noch kein Zustandsfoto"); },
@@ -719,18 +761,13 @@ function renderPlants() {
   const groups = {};
   shown.forEach(p => { const r = str(p.room, 60) || "Ohne Raum"; (groups[r] = groups[r] || []).push(p); });
   const order = Object.keys(groups).sort((a, b) => a === "Ohne Raum" ? 1 : b === "Ohne Raum" ? -1 : a.localeCompare(b, "de"));
-  let h = `<header class="head-row"><div>${head}<h1 class="headline"><em class="ok">${S.plants.length}</em> ${S.plants.length === 1 ? "Pflanze" : "Pflanzen"} in ${plural(rooms.length || 1, "Raum", "Räumen")}.</h1></div>${S.canWrite ? `<button class="add-btn" data-add aria-label="Pflanzen hinzufügen" title="Pflanzen hinzufügen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}</header>`;
+  let h = `<header>${head}<div class="head-row"><h1 class="headline"><em class="ok">${S.plants.length}</em> ${S.plants.length === 1 ? "Pflanze" : "Pflanzen"} in ${plural(rooms.length || 1, "Raum", "Räumen")}.</h1>${S.canWrite ? `<button class="add-btn" data-add aria-label="Pflanzen hinzufügen" title="Pflanzen hinzufügen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}</div></header>`;
   h += `<div class="toolbar">
     <label class="search"><span class="muted small" style="position:absolute;width:1px;height:1px;overflow:hidden">Pflanzen suchen</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg><input id="search" type="search" placeholder="Suchen nach Name, Art oder Raum" value="${esc(S.filter.q)}" autocomplete="off"></label>
     ${rooms.length > 1 ? `<div class="pills hscroll" data-keep="rooms" role="group" aria-label="Nach Raum filtern"><button class="pill" data-room="" aria-pressed="${!S.filter.room}">Alle</button>${rooms.map(r => `<button class="pill" data-room="${esc(r)}" aria-pressed="${S.filter.room === r}">${esc(r)}</button>`).join("")}</div>` : ""}
   </div>` + sketchPanel();
-  let settingsHtml = "";
-  if (canPhotoCheck()) {
-    const cur = clampInt(S.settings.photoCheckDays, 0, 90, 14);
-    settingsHtml = `<section class="panel compact"><p><strong>Foto-Check durch den Pflanzendoktor</strong></p><p class="muted small">So oft fragt die App pro Pflanze nach einem Zustandsfoto. Schwache Pflanzen doppelt so oft.</p><div class="pills pills-wrap" role="group" aria-label="Foto-Check Häufigkeit">${[7, 14, 30, 0].map(v => `<button class="pill" data-photo-every="${v}" aria-pressed="${cur === v}">${v ? `alle ${v} Tage` : "aus"}</button>`).join("")}</div></section>`;
-  }
-  if (!shown.length) return h + `<section class="calm"><p>Keine Pflanze passt zu dieser Suche.</p></section>` + settingsHtml;
-  return h + order.map(r => section(r, groups[r].length, `<div class="grid">${groups[r].sort(byName).map(card).join("")}</div>`)).join("") + settingsHtml;
+  if (!shown.length) return h + `<section class="calm"><p>Keine Pflanze passt zu dieser Suche.</p></section>`;
+  return h + order.map(r => section(r, groups[r].length, `<div class="grid">${groups[r].sort(byName).map(card).join("")}</div>`)).join("");
 }
 function finderPrompt(f) {
   return `Du bist Beraterin in einem Schweizer Pflanzengeschäft. Schlage 4 Zimmerpflanzen vor, die zu diesen Bedingungen passen.
@@ -746,7 +783,7 @@ async function runFinder() {
   if (f.busy || !S.sample) return;
   f.busy = true; f.error = ""; render();
   try {
-    const a = await S.sample.json(finderPrompt(f), { modelTier: "default" });
+    const a = await S.sample.json(finderPrompt(f), { modelTier: "default", feature: "finder" });
     const arr = Array.isArray(a) ? a : (a && Array.isArray(a.plants) ? a.plants : []);
     f.result = arr.map(x => ({ name: str(x && x.name, 60), species: str(x && x.species, 80), why: str(x && x.why, 200), care: str(x && x.care, 200),
       difficulty: ["leicht", "mittel", "anspruchsvoll"].includes(x && x.difficulty) ? x.difficulty : "", petSafe: !!(x && x.petSafe === true) })).filter(x => x.name).slice(0, 6);
@@ -768,7 +805,7 @@ function finderHtml(f) {
 function renderNew() {
   const f = S.finder;
   let h = `<header>${kicker("Neue Pflanzen")}<h1 class="headline">Eine <em>neue Pflanze</em> anschaffen.</h1><p class="lede">Claude schlägt Pflanzen vor, die zu deinem Standort passen, und erklärt, was nach dem Kauf zu tun ist: eingewöhnen, umtopfen und die richtige Erde.</p></header>`;
-  if (!S.sample) return h + `<section class="panel"><p>Für Vorschläge und Anleitungen braucht die App den KI-Zugang. Richte ihn unter «Verlauf» bei «Einstellungen» ein.</p><div class="btn-row"><a class="btn" href="https://feey.ch/collections/bestseller" target="_blank" rel="noopener noreferrer">Beliebte Pflanzen bei feey ↗</a></div></section>`;
+  if (!S.sample) return h + `<section class="panel"><p>Für Vorschläge und Anleitungen braucht die App den KI-Zugang. Richte ihn im Profil (oben rechts) unter «KI-Zugang» ein.</p><div class="btn-row"><a class="btn" href="https://feey.ch/collections/bestseller" target="_blank" rel="noopener noreferrer">Beliebte Pflanzen bei feey ↗</a></div></section>`;
   const opt = (arr, v) => arr.map(o => `<option${o === v ? " selected" : ""}>${esc(o)}</option>`).join("");
   h += `<section class="panel">
     <h2>Pflanze finden</h2>
@@ -785,7 +822,9 @@ function renderNew() {
   </section>
   <section class="panel">
     <h2>Schon gekauft?</h2>
-    <p class="muted small">Gib den Namen ein. Claude erklärt die ersten Wochen, das Umtopfen und welche Erde passt.</p>
+    ${canScan() ? `<p class="muted small">Fotografiere die neue Pflanze. Claude bestimmt die Art, schlägt Pflege und den besten Standort vor und erklärt die ersten Wochen, das Umtopfen und die Erde.</p>
+    <div class="btn-row"><button class="btn primary" data-scan-new>${CAM_ICON}Foto machen und bestimmen</button></div>
+    <p class="muted small" style="margin-top:6px">Oder gib den Namen ein:</p>` : `<p class="muted small">Gib den Namen ein. Claude erklärt die ersten Wochen, das Umtopfen und welche Erde passt.</p>`}
     <div class="field"><label for="n-have">Name der Pflanze</label><input id="n-have" maxlength="60" value="${esc(f.have)}" placeholder="z. B. Calathea orbifolia" autocomplete="off"></div>
     <div class="btn-row"><button class="btn" data-have>Anleitung zeigen</button></div>
   </section>`;
@@ -838,8 +877,8 @@ async function runGuide() {
   s.busy = true; s.error = ""; renderSheet();
   const p = s.id ? getP(s.id) : null;
   try {
-    const x = p ? { name: nm(p), species: str(p.species, 80), lastRepotted: p.lastRepotted } : { name: s.name, species: s.species || "", isNew: true };
-    const o = await S.sample.json(guidePrompt(x), { modelTier: "default" });
+    const x = p ? { name: nm(p), species: str(p.species, 80), lastRepotted: s.isNew ? "" : p.lastRepotted, isNew: !!s.isNew } : { name: s.name, species: s.species || "", isNew: true };
+    const o = await S.sample.json(guidePrompt(x), { modelTier: "default", feature: "guide" });
     if (S.sheet !== s) return;
     s.result = normalizeGuide(o);
     if (p && S.canWrite) writePlant(p.id, () => ({ guide: s.result })).catch(() => {});
@@ -911,7 +950,7 @@ function renderHistory() {
   S.plants.forEach(p => logOf(p).forEach(e => all.push({ e, p })));
   all.sort((a, b) => String(b.e.t).localeCompare(String(a.e.t)));
   let h = `<header>${head}<h1 class="headline">Verlauf.</h1></header>`;
-  if (!all.length) return h + `<section class="panel"><p>Sobald du giesst, düngst oder einen Check-in machst, erscheint es hier, mit Uhrzeit.</p></section>` + settingsPanel();
+  if (!all.length) return h + `<section class="panel"><p>Sobald du giesst, düngst oder einen Check-in machst, erscheint es hier, mit Uhrzeit.</p></section>`;
   const cut = addDays(today(), -30);
   const recent = all.filter(x => validYmd(x.e.d) && x.e.d >= cut);
   const waters = recent.filter(x => x.e.type === "water");
@@ -935,20 +974,63 @@ function renderHistory() {
     const hl = PHOTO_TYPES.includes(e.type) && e.health ? ` · ${HEALTH[clampInt(e.health, 1, 5, 3)]}` : "";
     const extra = (e.type === "skip" && e.days ? ` · ${plural(clampInt(e.days, 1, 14, 1), "Tag", "Tage")}` : "") + (TREND[e.trend] ? ` · ${TREND[e.trend]}` : "");
     return `<li class="row simple" data-open="${esc(p.id)}" tabindex="0">${tube(p)}${thumb(p)}<div class="row-main"><span class="row-name">${esc(EV[e.type] || "Eintrag")} · ${esc(nm(p))}</span><span class="row-meta">${esc(who(e.by))}, ${esc(timeOf(e.t))}${hl}${extra}</span>${e.note ? `<span class="row-note">${esc(str(e.note, 300))}</span>` : ""}</div><span class="dot ${type}" aria-hidden="true"></span></li>`;
-  }).join("")}</ul>`)).join("") + settingsPanel();
+  }).join("")}</ul>`)).join("");
 }
 
-/* ---------- settings: Haushalt, KI-Schlüssel, Konto, Sicherung, Installation ---------- */
-function settingsPanel() {
-  const me = window.PP.me;
-  if (!me) return "";
-  const hh = me.household, A = S.acct, busy = k => A.busy === k ? " disabled" : "";
-  const solo = hh.members.length <= 1;
-  const ai = hh.ai;
-  const inviteUrl = A.invite ? `${location.origin}/#einladung=${A.invite.code}` : "";
-  const legacyN = window.PP.legacy.done ? 0 : window.PP.legacy.count;
+/* ---------- Profil: Erinnerungen, Pflege, Haushalt, KI-Zugang und Kosten, Konto, Sicherung ---------- */
+const FEATURE_LABEL = { sketch: "Skizzen", doctor: "Pflanzendoktor", photocheck: "Foto-Checks", compare: "Fotovergleiche", scan: "Foto-Erkennung", profile: "Pflegevorschläge", finder: "Pflanzenfinder", guide: "Anleitungen", other: "Anderes" };
+const usd = v => (v > 0 && v < 0.01 ? "unter $0.01" : `$${v.toFixed(2)}`);
+const mb = b => (b < 1e6 ? `${Math.max(1, Math.round(b / 1e3))} KB` : `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)} MB`);
+function monthName(ym) { return validYmd(ym + "-01") ? dateFmt(ym + "-01", { month: "long" }) : ""; }
 
-  const hhBody = `<div><h3>Haushalt</h3>
+function renderProfile() {
+  const me = window.PP.me;
+  if (!me) return `<header>${kicker("Profil")}<h1 class="headline">Profil.</h1></header><section class="panel"><p>Du bist nicht angemeldet.</p></section>`;
+  if (!S.push.checked) pushCheck();
+  if (S.usage === null && !S.usageBusy) loadUsage();
+  const A = S.acct;
+  return `<header>${kicker("Profil")}<h1 class="headline">Hallo <em>${esc(me.user.name)}</em>.</h1><p class="lede">Haushalt «${esc(me.household.name)}» mit ${plural(S.plants.length, "Pflanze", "Pflanzen")}.</p></header>
+    ${A.err ? `<p class="banner err-banner" role="alert">${esc(A.err)}</p>` : ""}
+    ${remindersPanel()}${carePanel()}${householdPanel()}${aiPanel()}${accountPanel()}${dataPanel()}`;
+}
+function remindersPanel() {
+  const P = window.PP.push, st = S.push, busy = k => (st.busy === k ? " disabled" : "");
+  let body;
+  if (!P.supported()) {
+    body = P.ios() && !P.standalone()
+      ? `<p>Auf dem iPhone kommen Erinnerungen nur, wenn die App auf dem Home-Bildschirm liegt (ab iOS 16.4). In Safari «Teilen» antippen, dann «Zum Home-Bildschirm». Öffne die App danach von dort und schalte die Erinnerungen hier ein.</p>`
+      : `<p class="muted">Dieser Browser kann keine Benachrichtigungen empfangen.${P.ios() ? " Aktualisiere iOS auf Version 16.4 oder neuer." : ""}</p>`;
+  } else if (P.permission() === "denied") {
+    body = `<p>Benachrichtigungen sind für diese App blockiert. Erlaube sie in den Einstellungen des Geräts${P.ios() ? " (Einstellungen → Mitteilungen → Pflanzen)" : " (bei den Website-Einstellungen im Browser)"} und lade die App neu.</p>`;
+  } else if (!st.checked) {
+    body = `<p class="muted">Wird geprüft …</p>`;
+  } else if (st.on) {
+    body = `<p><span class="chip c-ok">Eingeschaltet</span> auf diesem Gerät.</p>
+      <p class="muted">Jeden Morgen zwischen 7 und 8 Uhr (im Sommer zwischen 8 und 9 Uhr) kommt eine Nachricht, wenn etwas zu giessen, düngen oder umtopfen ist. An freien Tagen kommt nichts.</p>
+      <div class="btn-row"><button class="btn sm" data-acct="push-test"${busy("push-test")}>${st.busy === "push-test" ? "Wird gesendet …" : "Probe-Nachricht senden"}</button><button class="btn ghost sm" data-acct="push-off"${busy("push-off")}>Ausschalten</button></div>`;
+  } else {
+    body = `<p class="muted">Eine Nachricht am Morgen, zum Beispiel «3 Pflanzen giessen: Monstera, Ficus, Calathea». Jede Person schaltet das auf ihrem eigenen Gerät ein.</p>
+      <div class="btn-row"><button class="btn primary sm" data-acct="push-on"${busy("push-on")}>${st.busy === "push-on" ? "Einen Moment …" : "Erinnerungen einschalten"}</button></div>`;
+  }
+  return `<section class="panel" id="erinnerungen"><h2>Erinnerungen</h2>${body}${st.err ? `<p class="err" role="alert">${esc(st.err)}</p>` : ""}</section>`;
+}
+function carePanel() {
+  const on = S.settings.seasonal !== false;
+  const cur = clampInt(S.settings.photoCheckDays, 0, 90, 14);
+  const W = S.canWrite;
+  return `<section class="panel" id="pflege"><h2>Pflegeplan</h2>
+    <div><h3>An die Jahreszeit anpassen</h3>
+      <p class="muted">Im Winter bleibt die Erde länger feucht. Die App verlängert die Giessintervalle dann um bis zu einen Drittel und pausiert das Düngen von November bis Februar. Im Frühling werden die Abstände wieder kürzer. Ein Intervall gilt immer für den Monat, in dem du es festgelegt hast.</p>
+      <div class="pills" role="group" aria-label="Jahreszeit berücksichtigen"><button class="pill" data-acct="seasonal-on" aria-pressed="${on}"${W ? "" : " disabled"}>Ein</button><button class="pill" data-acct="seasonal-off" aria-pressed="${!on}"${W ? "" : " disabled"}>Aus</button></div></div>
+    <div><h3>Lernt aus eurem Giessen</h3><p class="muted">Giesst ihr bei einer Pflanze regelmässig früher oder später als geplant, oder ist die Erde oft noch feucht, schlägt die App bei der Pflanze ein passenderes Intervall vor.</p></div>
+    ${canPhotoCheck() ? `<div><h3>Foto-Check durch den Pflanzendoktor</h3><p class="muted">So oft fragt die App pro Pflanze nach einem Zustandsfoto. Schwache Pflanzen doppelt so oft.</p><div class="pills pills-wrap" role="group" aria-label="Foto-Check Häufigkeit">${[7, 14, 30, 0].map(v => `<button class="pill" data-photo-every="${v}" aria-pressed="${cur === v}">${v ? `alle ${v} Tage` : "aus"}</button>`).join("")}</div></div>` : ""}
+  </section>`;
+}
+function householdPanel() {
+  const me = window.PP.me, hh = me.household, A = S.acct, busy = k => (A.busy === k ? " disabled" : "");
+  const solo = hh.members.length <= 1;
+  const inviteUrl = A.invite ? `${location.origin}/#einladung=${A.invite.code}` : "";
+  return `<section class="panel" id="haushalt"><h2>Haushalt</h2>
     ${A.nameEdit ? `<div class="field"><label for="hh-name">Name des Haushalts</label><input id="hh-name" data-keepval maxlength="60" value="${esc(hh.name)}"></div>
       <div class="btn-row"><button class="btn primary sm" data-acct="hh-name-save"${busy("hh-name-save")}>Speichern</button><button class="btn ghost sm" data-acct="hh-name-cancel">Abbrechen</button></div>`
     : `<p class="hh-name"><b>${esc(hh.name)}</b> <button class="btn ghost sm" data-acct="hh-name-edit">Umbenennen</button></p>`}
@@ -964,35 +1046,92 @@ function settingsPanel() {
       <div class="btn-row"><button class="btn sm" data-acct="join"${busy("join")}>Beitreten</button></div>
     </details>
     ${solo ? "" : `<div class="btn-row"><button class="btn danger sm" data-acct="leave"${busy("leave")}>${A.leave ? "Ja, Haushalt verlassen" : "Haushalt verlassen"}</button></div>${A.leave ? `<p class="muted small">Du startest dann mit einem leeren Haushalt. Die Pflanzen bleiben hier bei den anderen.</p>` : ""}`}
-  </div>`;
-
+  </section>`;
+}
+function costHtml() {
+  const u = S.usage;
+  if (!u) return S.usageBusy ? `<p class="muted small">Kosten werden geladen …</p>` : "";
+  if (u.error) return `<p class="muted small">Die Kosten lassen sich gerade nicht laden.</p>`;
+  const c = u.current, prev = u.previous;
+  const feats = Object.entries(c.features || {}).filter(([, x]) => x.req).sort((a, b) => b[1].usd - a[1].usd);
+  const max = Math.max(0.000001, ...feats.map(([, x]) => x.usd));
+  return `<div class="cost"><h3>KI-Kosten im ${esc(monthName(u.month))}</h3>
+    <p class="cost-total"><b>${c.req ? usd(c.usd) : "$0.00"}</b><span class="muted">${plural(c.req, "Anfrage", "Anfragen")}${prev.req ? ` · ${esc(monthName(u.prevMonth))}: ${usd(prev.usd)}` : ""}</span></p>
+    ${feats.length ? `<ul class="cost-list">${feats.map(([k, x]) => `<li><span>${esc(FEATURE_LABEL[k] || k)} <span class="muted small">${x.req}×</span></span><span class="cost-bar" aria-hidden="true"><i style="width:${Math.max(3, Math.round(100 * x.usd / max))}%"></i></span><b>${usd(x.usd)}</b></li>`).join("")}</ul>` : ""}
+    <p class="muted small">Geschätzt aus den Tokens zum Listenpreis von Anthropic, für den ganzen Haushalt. Die genaue Abrechnung steht auf <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer">console.anthropic.com</a>.</p></div>`;
+}
+function aiPanel() {
+  const ai = window.PP.me.household.ai, A = S.acct, busy = k => (A.busy === k ? " disabled" : "");
   const keyForm = `<div class="field"><label for="key-in">Anthropic-API-Schlüssel</label><input id="key-in" data-keepval type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…"></div>
     <div class="btn-row"><button class="btn primary sm" data-acct="key-save"${busy("key-save")}>${A.busy === "key-save" ? "Wird geprüft …" : "Speichern"}</button>${ai ? `<button class="btn ghost sm" data-acct="key-cancel">Abbrechen</button>` : ""}</div>`;
-  const aiBody = `<div><h3>KI-Zugang</h3>
+  return `<section class="panel" id="ki"><h2>KI-Zugang und Kosten</h2>
     ${ai && !A.keyEdit ? `<p><span class="chip c-ok">Verbunden</span> Schlüssel <code>${esc(ai.hint)}</code>${ai.by ? `, hinterlegt von ${esc(ai.by)}` : ""}.</p>
       <p class="muted">Skizzen, Pflanzendoktor, Foto-Erkennung und Pflanzenfinder laufen über dieses Anthropic-Konto. Die Kosten gehen dorthin, für alle im Haushalt.</p>
       <div class="btn-row"><button class="btn sm" data-acct="key-edit">Schlüssel ersetzen</button><button class="btn danger sm" data-acct="key-remove"${busy("key-remove")}>Entfernen</button></div>`
     : `<p class="muted">Jeder Haushalt bezahlt seine KI-Anfragen selbst. Erstelle auf <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> einen API-Schlüssel, lade etwas Guthaben auf und trag den Schlüssel hier ein. Er wird verschlüsselt gespeichert und ist danach für niemanden mehr lesbar, auch nicht für dich.</p>${keyForm}`}
-  </div>`;
-
-  const acctBody = `<div><h3>Konto</h3>
+    ${costHtml()}
+  </section>`;
+}
+function accountPanel() {
+  const me = window.PP.me, A = S.acct, busy = k => (A.busy === k ? " disabled" : "");
+  return `<section class="panel" id="konto"><h2>Konto</h2>
     <p>Angemeldet als <b>${esc(me.user.name)}</b> <span class="muted">(${esc(me.user.login)})</span></p>
     ${A.pwEdit ? `<div class="field"><label for="pw-old">Bisheriges Passwort</label><input id="pw-old" data-keepval type="password" autocomplete="current-password"></div>
       <div class="field"><label for="pw-new">Neues Passwort</label><input id="pw-new" data-keepval type="password" autocomplete="new-password" minlength="8"></div>
       <div class="btn-row"><button class="btn primary sm" data-acct="pw-save"${busy("pw-save")}>Passwort ändern</button><button class="btn ghost sm" data-acct="pw-cancel">Abbrechen</button></div>`
     : `<div class="btn-row"><button class="btn sm" data-acct="pw-edit">Passwort ändern</button><button class="btn sm" data-acct="logout">Abmelden</button></div>`}
-  </div>`;
-
-  const standalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
-  return `<section class="panel" id="settings"><h2>Einstellungen</h2>
-    ${A.err ? `<p class="err" role="alert">${esc(A.err)}</p>` : ""}
-    ${hhBody}
-    ${aiBody}
-    ${acctBody}
-    <div><h3>Daten sichern</h3><p class="muted">Die Pflanzen sind auf dem Server gespeichert und auf allen Geräten im Haushalt gleich. Eine Sicherung als Datei schadet trotzdem nicht. Beim Einlesen bleiben Pflanzen, die es schon gibt, unverändert.</p>
+  </section>`;
+}
+function dataPanel() {
+  const A = S.acct, busy = k => (A.busy === k ? " disabled" : "");
+  const legacyN = window.PP.legacy.done ? 0 : window.PP.legacy.count;
+  const ph = S.usage && !S.usage.error ? S.usage.photos : null;
+  const standalone = window.PP.push.standalone();
+  return `<section class="panel" id="daten"><h2>Daten</h2>
+    <div><h3>Sicherung</h3><p class="muted">Die Pflanzen sind auf dem Server gespeichert und auf allen Geräten im Haushalt gleich. Eine Sicherung als Datei schadet trotzdem nicht. Beim Einlesen bleiben Pflanzen, die es schon gibt, unverändert.</p>
       <div class="btn-row" style="margin-top:10px"><button class="btn" data-export>Sicherung herunterladen</button><input id="imp-file" class="vh" type="file" accept="application/json,.json"><label class="btn" for="imp-file">Sicherung einlesen</label>${legacyN ? `<button class="btn" data-acct="legacy"${busy("legacy")}>${legacyN === 1 ? "1 Pflanze" : legacyN + " Pflanzen"} aus diesem Browser übernehmen</button>` : ""}</div></div>
+    ${ph && ph.count ? `<div><h3>Fotos</h3><p class="muted">${plural(ph.count, "Foto", "Fotos")} gespeichert, etwa ${mb(ph.bytes * 4 / 3)}.${ph.bytes * 4 / 3 > 150e6 ? " Der Gratis-Speicher wird langsam knapp. Lösche alte Fotos im Foto-Zeitstrahl einer Pflanze." : ""}</p></div>` : ""}
     ${standalone ? "" : `<div><h3>Auf den Homescreen</h3><p class="muted">iPhone: In Safari auf «Teilen» tippen, dann «Zum Home-Bildschirm». Android: Im Chrome-Menü «App installieren» wählen.</p></div>`}
   </section>`;
+}
+async function pushCheck() {
+  const st = S.push, P = window.PP.push;
+  st.checked = true;
+  try { const sub = await P.current(); st.on = !!sub && P.permission() === "granted"; }
+  catch { st.on = false; }
+  if (view() === "profil") render();
+}
+async function loadUsage() {
+  S.usageBusy = true;
+  try { S.usage = await window.PP.account.usage(); }
+  catch { S.usage = { error: true }; }
+  S.usageBusy = false;
+  if (view() === "profil") render();
+}
+const PUSH_ERR = {
+  push_unsupported: "Dieser Browser kann keine Benachrichtigungen empfangen.",
+  push_denied: "Benachrichtigungen sind blockiert. Erlaube sie in den Einstellungen des Geräts.",
+  push_dismissed: "Ohne deine Erlaubnis kann die App keine Erinnerungen schicken.",
+  not_subscribed: "Dieses Gerät ist nicht angemeldet. Schalte die Erinnerungen aus und wieder ein.",
+  push_failed: "Die Nachricht konnte nicht zugestellt werden. Schalte die Erinnerungen aus und wieder ein."
+};
+async function pushAction(act) {
+  const st = S.push, P = window.PP.push;
+  if (st.busy) return;
+  st.busy = act; st.err = "";
+  // enable() zuerst aufrufen, noch im selben Tipp: Safari fragt nur dann nach der Erlaubnis.
+  const job = act === "push-on" ? P.enable() : act === "push-off" ? P.disable() : P.test();
+  render();
+  try {
+    await job;
+    if (act === "push-on") { st.on = true; toast("Erinnerungen eingeschaltet"); }
+    if (act === "push-off") { st.on = false; toast("Erinnerungen ausgeschaltet"); }
+    if (act === "push-test") toast("Probe-Nachricht gesendet");
+  } catch (e) {
+    st.err = PUSH_ERR[e && e.code] || (e && e.name === "NotAllowedError" ? PUSH_ERR.push_denied : window.PP.errText(e));
+  }
+  st.busy = "";
+  render();
 }
 async function acctAction(act, btn) {
   const A = S.acct, P = window.PP, acc = P.account;
@@ -1003,6 +1142,12 @@ async function acctAction(act, btn) {
     catch (e) { A.busy = ""; A.err = keyErr(e) || P.errText(e); render(); return undefined; }
   };
   if (act !== "leave") A.leave = false;
+  if (act === "push-on" || act === "push-off" || act === "push-test") return pushAction(act);
+  if (act === "seasonal-on" || act === "seasonal-off") {
+    const on = act === "seasonal-on";
+    if ((S.settings.seasonal !== false) === on) return;
+    return saveSetting({ seasonal: on }, on ? "Giessplan passt sich der Jahreszeit an" : "Giessplan ohne Jahreszeit");
+  }
   switch (act) {
     case "hh-name-edit": A.nameEdit = true; render(); { const el = $("#hh-name"); if (el) el.focus(); } return;
     case "hh-name-cancel": A.nameEdit = false; render(); return;
@@ -1104,7 +1249,7 @@ function render() {
   try { if (fid && typeof ae.selectionStart === "number") sel = [ae.selectionStart, ae.selectionEnd]; } catch { sel = null; }
   let h = banner();
   if (!S.loaded) h += `<p class="muted">Pflanzen werden geladen …</p>`;
-  else if (!S.dbMissing) h += ({ heute: renderToday, pflanzen: renderPlants, neu: renderNew, plan: renderPlan, verlauf: renderHistory })[v]();
+  else if (!S.dbMissing || v === "profil") h += ({ heute: renderToday, pflanzen: renderPlants, neu: renderNew, plan: renderPlan, verlauf: renderHistory, profil: renderProfile })[v]();
   const keep = {};
   app.querySelectorAll("[data-keep]").forEach(el => { keep[el.dataset.keep] = el.scrollLeft; });
   const vals = {};
@@ -1119,6 +1264,7 @@ function render() {
   if (S.sheet && S.sheet.mode === "detail") renderSheet();
   fillMeters();
   needNames();
+  updateBadge();
 }
 function needNames() {
   if (!S.user || typeof S.user.profiles !== "function") return;
@@ -1157,11 +1303,11 @@ function closeSheet() {
 function renderSheet() {
   const s = S.sheet;
   if (!s) return;
-  const fn = { add: sheetAdd, detail: sheetDetail, form: sheetForm, bulk: sheetBulk, doctor: sheetDoctor, checkin: sheetCheckin, snooze: sheetSnooze, scan: sheetScan, photocheck: sheetPhotoCheck, guide: sheetGuide }[s.mode];
+  const fn = { add: sheetAdd, detail: sheetDetail, form: sheetForm, bulk: sheetBulk, doctor: sheetDoctor, checkin: sheetCheckin, snooze: sheetSnooze, scan: sheetScan, photocheck: sheetPhotoCheck, guide: sheetGuide, cutting: sheetCutting, timeline: sheetTimeline }[s.mode];
   const r = fn(s);
   const top = panel.scrollTop;
   panel.innerHTML = `<div class="sheet-head"><h2 id="sheet-title">${esc(r.title)}</h2><button class="icon-btn" data-close aria-label="Schliessen">✕</button></div><div class="sheet-body">${r.body}</div>`;
-  if (s.mode === "detail") panel.scrollTop = top;
+  if (s.mode === "detail" || s.mode === "timeline") panel.scrollTop = top;
   if (r.bind) r.bind();
   fillMeters();
 }
@@ -1183,53 +1329,277 @@ function logItem(e) {
   const extra = (e.type === "skip" && e.days ? ` um ${plural(clampInt(e.days, 1, 14, 1), "Tag", "Tage")}` : "") + (TREND[e.trend] ? ` · ${TREND[e.trend]}` : "");
   return `<li><span class="dot ${type}" aria-hidden="true"></span><div><strong>${esc(EV[e.type] || "Eintrag")}${extra}${hl}</strong> <span class="muted small">${fmtDate(e.d)}, ${esc(who(e.by))}</span>${e.note ? `<p class="small">${esc(str(e.note, 500))}</p>` : ""}</div></li>`;
 }
+function photosOf(p) {
+  const out = [], seen = new Set();
+  logOf(p).forEach(e => {
+    [e.photoId].concat(Array.isArray(e.photoIds) ? e.photoIds : []).forEach(pid => {
+      if (typeof pid === "string" && !seen.has(pid)) { seen.add(pid); out.push({ id: pid, d: validYmd(e.d) ? e.d : "", e }); }
+    });
+  });
+  if (typeof p.photoId === "string" && !seen.has(p.photoId)) out.push({ id: p.photoId, d: str(p.createdAt, 10), e: null });
+  return out;
+}
 function sheetDetail(s) {
   const p = getP(s.id);
   if (!p) return { title: "Pflanze", body: `<p class="muted">Wird geladen …</p>` };
-  const d = dueIn(p), log = logOf(p), W = S.canWrite, m = moisture(p);
+  const d = dueIn(p), log = logOf(p), W = S.canWrite, m = moisture(p), wet = inWater(p);
   const hs = log.filter(e => PHOTO_TYPES.includes(e.type) && e.health).slice(0, 12).reverse();
   const fd = clampInt(p.fertilizeDays, 0, 365, 0);
-  const photos = [];
-  const seen = new Set();
-  log.forEach(e => {
-    const ids = [e.photoId].concat(Array.isArray(e.photoIds) ? e.photoIds : []);
-    ids.forEach(pid => { if (typeof pid === "string" && !seen.has(pid)) { seen.add(pid); photos.push({ id: pid, d: e.d }); } });
-  });
-  const hint = W ? snoozeHint(p) : null;
+  const photos = photosOf(p);
+  const hint = W ? intervalHint(p) : null;
+  const parent = p.parentId ? getP(p.parentId) : null;
+  const kids = S.plants.filter(x => x.parentId === p.id).sort(byName);
   const acts = [];
-  if (W) acts.push(`<button class="btn water" data-act="water">Gegossen</button>`, `<button class="btn" data-act="snooze">Erde noch feucht</button>`, `<button class="btn" data-act="checkin">Check-in</button>`);
+  if (W) acts.push(`<button class="btn water" data-act="water">${wet ? "Wasser gewechselt" : "Gegossen"}</button>`);
+  if (W && wet) acts.push(`<button class="btn" data-act="potted">Eingetopft</button>`);
+  if (W && !wet) acts.push(`<button class="btn" data-act="snooze">Erde noch feucht</button>`);
+  if (W) acts.push(`<button class="btn" data-act="checkin">Check-in</button>`);
   if (canPhotoCheck()) acts.push(`<button class="btn" data-act="photocheck">Foto-Check</button>`);
   if (S.sample) acts.push(`<button class="btn" data-act="doctor">Pflanzendoktor</button>`, `<button class="btn" data-act="guide">Umtopfen &amp; Erde</button>`);
-  if (W) acts.push(`<button class="btn" data-act="fert">Gedüngt</button>`, `<button class="btn" data-act="repot">Umgetopft</button>`);
-  const meterText = !validYmd(p.lastWatered) ? "Noch nie gegossen erfasst" : d <= 0 ? "Substrat trocken: giessen" : `Noch etwa ${plural(d, "Tag", "Tage")} feucht`;
+  if (W && !wet) acts.push(`<button class="btn" data-act="fert">Gedüngt</button>`, `<button class="btn" data-act="repot">Umgetopft</button>`);
+  if (W && !wet) acts.push(`<button class="btn" data-act="cutting">Ableger erfassen</button>`);
+  const meterText = wet ? (d <= 0 ? "Wasser wechseln" : `Wasser wechseln ${dueText(d)}`) : !validYmd(p.lastWatered) ? "Noch nie gegossen erfasst" : d <= 0 ? "Substrat trocken: giessen" : `Noch etwa ${plural(d, "Tag", "Tage")} feucht`;
+  const base = clampInt(p.intervalDays, 1, 90, 7), eff = interval(p);
+  const seasonNote = !wet && eff !== base && S.settings.seasonal !== false ? ` (an den ${season().name} angepasst)` : "";
+  const rn = SC.repotNext(p, today()), rd = repotDue(p);
+  const repotText = wet ? "nach dem Bewurzeln" : rn === null ? "keine Erinnerung" : rd <= 0 ? "jetzt fällig" : `ab ${fmtDate(rn)}`;
+  const lastRepot = validYmd(p.lastRepotted) ? `, zuletzt ${fmtDate(p.lastRepotted)}` : "";
+  const fertText = fd ? `alle ${fd} Tage${validYmd(p.lastFertilized) ? `, zuletzt ${fmtDate(p.lastFertilized)}` : ""}${S.settings.seasonal !== false && SC.restMonth(today()) ? " (Winterpause bis Ende Februar)" : ""}` : "pausiert";
   const body = `
     ${p.photoId ? `<img class="hero" src="${esc(photoUrl(p.photoId))}" alt="Foto von ${esc(nm(p))}">` : ""}
     <div>
       ${p.species ? `<p class="sp" style="font-size:1.375rem;margin:0">${esc(str(p.species, 80))}</p>` : ""}
       <p class="muted">${esc(str(p.room, 60) || "Kein Raum erfasst")}</p>
-      <div class="chips">${dueChip(d)}${healthChip(p.health)}${validYmd(p.snoozeUntil) && p.snoozeUntil > today() ? `<span class="chip c-dry">verschoben bis ${fmtDate(p.snoozeUntil)}</span>` : ""}</div>
+      <div class="chips">${wet ? `<span class="chip c-water">Ableger im Wasser</span>` : ""}${dueChip(d)}${healthChip(p.health)}${validYmd(p.snoozeUntil) && p.snoozeUntil > today() ? `<span class="chip c-dry">verschoben bis ${fmtDate(p.snoozeUntil)}</span>` : ""}${rd !== null && rd <= 0 ? `<span class="chip c-dry">umtopfen</span>` : ""}</div>
+      ${parent ? `<p class="small" style="margin:8px 0 0">Ableger von <button class="linkish" data-act="open-plant" data-id="${esc(parent.id)}">${esc(nm(parent))}</button></p>` : ""}
     </div>
     <div class="meter">
       <div class="meter-row"><strong>${esc(meterText)}</strong><span class="muted">${Math.round(m * 100)} %</span></div>
       <div class="meter-bar" data-m="${m.toFixed(3)}" data-id="${esc(p.id)}" role="img" aria-label="Substratfeuchte ${Math.round(m * 100)} Prozent"><i style="width:${((S.prevM[p.id] ?? 0) * 100).toFixed(1)}%"></i></div>
     </div>
     ${p.careNote ? `<p class="note"><strong>Hinweis:</strong> ${esc(str(p.careNote, 300))}</p>` : ""}
-    ${hint ? `<div class="hint"><p><strong>Die Erde war ${hint.skips}× noch feucht.</strong> Giess lieber alle ${hint.suggest} statt alle ${interval(p)} Tage.</p><div class="btn-row"><button class="btn primary sm" data-act="hint-accept" data-days="${hint.suggest}">Auf ${hint.suggest} Tage ändern</button><button class="btn ghost sm" data-act="hint-dismiss">Passt so</button></div></div>` : ""}
+    ${wet ? `<p class="note">Wasser jede Woche wechseln. Sobald die Wurzeln 3 bis 5 cm lang sind, in kleine Töpfe mit lockerer Erde setzen und «Eingetopft» antippen. Dann gilt der normale Giessplan.</p>` : ""}
+    ${hint ? hintHtml(p, hint) : ""}
     ${acts.length ? `<div class="actions">${acts.join("")}</div>` : ""}
     <dl class="facts">
-      ${fact("Giessen", `alle ${interval(p)} Tage`)}
-      ${fact("Menge", p.amount || "–")}
-      ${fact("Zuletzt gegossen", validYmd(p.lastWatered) ? `${fmtDate(p.lastWatered)}, ${ago(p.lastWatered)}` : "noch nie")}
+      ${fact(wet ? "Wasser wechseln" : "Giessen", `alle ${eff} Tage${seasonNote}`)}
+      ${wet ? "" : fact("Menge", p.amount || "–")}
+      ${fact(wet ? "Zuletzt gewechselt" : "Zuletzt gegossen", validYmd(p.lastWatered) ? `${fmtDate(p.lastWatered)}, ${ago(p.lastWatered)}` : "noch nie")}
       ${fact("Nächstes Mal", d <= 0 ? "jetzt" : `${fmtDate(nextWater(p))}, ${dueText(d)}`)}
       ${fact("Lichtbedarf", p.light || "–")}
+      ${p.spot ? fact("Standort", str(p.spot, 200)) : ""}
       ${canPhotoCheck() && photoDueIn(p) !== null ? fact("Foto-Check", photoDueIn(p) <= 0 ? "fällig" : dueText(photoDueIn(p))) : ""}
-      ${fact("Düngen", fd ? `alle ${fd} Tage${validYmd(p.lastFertilized) ? `, zuletzt ${fmtDate(p.lastFertilized)}` : ""}` : "pausiert")}
+      ${wet ? "" : fact("Düngen", fertText)}
+      ${fact("Umtopfen", repotText + lastRepot)}
     </dl>
     ${hs.length >= 2 ? `<section><h3>Gesundheit</h3>${spark(hs)}</section>` : ""}
-    ${photos.length ? `<section><h3>Fotoverlauf</h3><div class="gallery hscroll">${photos.slice(0, 12).map(x => `<figure><img src="${esc(photoUrl(x.id))}" alt="Foto vom ${fmtDate(x.d)}" loading="lazy"><figcaption>${fmtDate(x.d)}</figcaption></figure>`).join("")}</div></section>` : ""}
+    <section><div class="sec-head"><h3>Foto-Zeitstrahl</h3>${photos.length || (W && S.assets) ? `<button class="linkish" data-act="timeline">${photos.length ? `Alle ${photos.length} ansehen` : "Erstes Foto hinzufügen"}</button>` : ""}</div>
+      ${photos.length ? `<div class="gallery hscroll">${photos.slice(0, 12).map(x => `<figure data-act="timeline" data-photo="${esc(x.id)}"><img src="${esc(photoUrl(x.id))}" alt="Foto vom ${fmtDate(x.d)}" loading="lazy"><figcaption>${fmtDate(x.d)}</figcaption></figure>`).join("")}</div>` : `<p class="muted small">Fotografiere die Pflanze ab und zu aus dem gleichen Winkel. So siehst du, wie sie wächst, und der Pflanzendoktor kann zwei Fotos vergleichen.</p>`}</section>
+    ${kids.length ? `<section><h3>Ableger</h3><ul class="kids">${kids.map(k => `<li><button class="linkish" data-act="open-plant" data-id="${esc(k.id)}">${esc(nm(k))}</button> <span class="muted small">${inWater(k) ? "im Wasser" : "eingetopft"}${validYmd(str(k.createdAt, 10)) ? `, seit ${fmtDate(str(k.createdAt, 10))}` : ""}</span></li>`).join("")}</ul></section>` : ""}
     <section><h3>Verlauf</h3>${log.length ? `<ul class="log">${log.slice(0, 15).map(logItem).join("")}</ul>` : `<p class="muted">Noch keine Einträge.</p>`}</section>
     ${W ? `<div class="btn-row"><button class="btn" data-act="edit">Bearbeiten</button>${S.sample ? `<button class="btn" data-act="resketch"${sketchJobs.has(p.id) ? " disabled" : ""}>${sketchJobs.has(p.id) ? "Skizze wird gezeichnet …" : (cleanSketch(p.sketch) ? "Skizze neu zeichnen" : "Skizze zeichnen")}</button>` : ""}<button class="btn danger" data-act="delete">${s.confirmDel ? "Ja, endgültig löschen" : "Löschen"}</button></div>` : ""}`;
   return { title: nm(p), body };
+}
+
+/* ---------- Ableger ---------- */
+function sheetCutting(s) {
+  const p = getP(s.id) || {};
+  return {
+    title: `Ableger von ${nm(p)}`,
+    body: `<form class="form" id="cutform" novalidate>
+      <div class="field"><label for="ct-name">Name</label><input id="ct-name" maxlength="60" value="${esc(`Ableger ${nm(p)}`)}" autocomplete="off"></div>
+      <div class="two">
+        <div class="field"><label for="ct-n">Wie viele?</label><select id="ct-n">${[1, 2, 3, 4, 5, 6].map(i => `<option${i === 1 ? " selected" : ""}>${i}</option>`).join("")}</select></div>
+        <div class="field"><label for="ct-room">Raum</label><input id="ct-room" list="ct-rooms" maxlength="60" value="${esc(str(p.room, 60))}" autocomplete="off"><datalist id="ct-rooms">${roomList().map(r => `<option value="${esc(r)}"></option>`).join("")}</datalist></div>
+      </div>
+      <fieldset class="field"><legend>Wie bewurzelst du sie?</legend>
+        <label class="inline"><input type="radio" name="ct-stage" value="wasser" checked> Im Wasserglas: Erinnerung, jede Woche das Wasser zu wechseln</label>
+        <label class="inline"><input type="radio" name="ct-stage" value="erde"> Direkt in Erde: normaler Giessplan, Erde leicht feucht halten</label>
+      </fieldset>
+      <p class="muted small">Jeder Ableger wird eine eigene Pflanze mit Art, Licht und Giessmenge der Mutterpflanze. Gedüngt wird erst, wenn er gut eingewurzelt ist.</p>
+      <p id="ct-err" class="err" role="alert"></p>
+      <div class="btn-row"><button class="btn primary" type="submit" id="ct-save">Ableger anlegen</button><button class="btn ghost" type="button" data-act="back">Zurück</button></div>
+    </form>`,
+    bind: () => $("#cutform").addEventListener("submit", saveCutting)
+  };
+}
+async function saveCutting(e) {
+  e.preventDefault();
+  const s = S.sheet, p = getP(s.id), btn = $("#ct-save"), err = $("#ct-err");
+  if (!p) return;
+  const name = str($("#ct-name").value, 56) || `Ableger ${nm(p)}`;
+  const n = clampInt($("#ct-n").value, 1, 6, 1);
+  const stage = (($('#cutform input[name="ct-stage"]:checked') || {}).value) === "erde" ? "erde" : "wasser";
+  const room = str($("#ct-room").value, 60);
+  btn.disabled = true; btn.textContent = "Lege an …"; err.textContent = "";
+  try {
+    const ids = [];
+    for (let i = 0; i < n; i++) {
+      const data = {
+        name: n > 1 ? `${name} ${i + 1}` : name, species: str(p.species, 80), room, light: p.light || "Hell, indirekt", amount: p.amount || "Mittel",
+        intervalDays: stage === "erde" ? Math.max(1, Math.round(interval(p) * 0.7)) : interval(p), fertilizeDays: 0, repotMonths: 12,
+        careNote: stage === "erde" ? "Ableger: Erde gleichmässig leicht feucht halten, hell, aber ohne direkte Sonne." : "", parentId: p.id, lastWatered: today()
+      };
+      if (stage === "wasser") data.stage = "wasser";
+      ids.push(await createPlant(data, [mkEntry("born", { note: `Ableger von ${nm(p)}${stage === "wasser" ? ", im Wasser" : ", in Erde"}` })]));
+    }
+    await writePlant(p.id, cur => ({ log: pushLog(cur, mkEntry("cutting", { note: n > 1 ? `${n} Ableger: ${name}` : name })) }));
+    if (S.sheet === s) openSheet("detail", { id: ids.length === 1 ? ids[0] : p.id });
+    toast(n > 1 ? `${n} Ableger angelegt` : `${name} angelegt`);
+  } catch (ex) {
+    if (S.sheet !== s) return;
+    btn.disabled = false; btn.textContent = "Ableger anlegen";
+    err.textContent = writeMsg(ex);
+  }
+}
+function potted(id) {
+  const p = getP(id);
+  if (!p) return;
+  const entry = mkEntry("potted");
+  writePlant(id, cur => ({ stage: { __delete__: true }, lastWatered: today(), lastRepotted: today(), intervalRef: today(), intervalSetAt: new Date().toISOString(), log: pushLog(cur, entry) }))
+    .then(() => toast(`${nm(p)} eingetopft. Ab jetzt gilt der Giessplan.`)).catch(writeErr);
+}
+
+/* ---------- Foto-Zeitstrahl ---------- */
+const photoKey = x => String((x.e && x.e.t) || x.d || "");
+function sheetTimeline(s) {
+  const p = getP(s.id);
+  if (!p) return { title: "Fotos", body: `<p class="muted">Wird geladen …</p>` };
+  const photos = photosOf(p), W = S.canWrite;
+  s.sel = (s.sel || []).filter(id => photos.some(x => x.id === id));
+  const sel = s.sel.map(id => photos.find(x => x.id === id)).sort((a, b) => photoKey(a).localeCompare(photoKey(b))); // älteres zuerst
+  const canCompare = !!(S.sample && S.imgLimits && (S.imgLimits.maxCount || 1) >= 2);
+  let cmp = "";
+  if (sel.length === 2) {
+    const [older, newer] = sel;
+    const gap = older.d && newer.d ? diffDays(older.d, newer.d) : null;
+    cmp = `<section class="compare" id="cmp"><div class="cmp-pair">${[older, newer].map(x => `<figure><img src="${esc(photoUrl(x.id))}" alt="Foto vom ${fmtDate(x.d)}"><figcaption>${fmtDate(x.d)}</figcaption></figure>`).join("")}</div>
+      <p class="muted small">${gap !== null ? `${plural(gap, "Tag", "Tage")} dazwischen. ` : ""}${canCompare ? "Der Pflanzendoktor kann beschreiben, was sich verändert hat." : ""}</p>
+      ${s.cmpBusy ? `<p class="status" role="status">Der Pflanzendoktor vergleicht die zwei Fotos …</p>` : s.cmpErr ? `<p class="err">${esc(s.cmpErr)}</p>` : ""}
+      ${s.cmp ? compareHtml(s.cmp, s) : ""}
+      <div class="btn-row">${canCompare && !s.cmpBusy && !s.cmp ? `<button class="btn primary sm" data-act="tl-compare">Vom Pflanzendoktor vergleichen lassen</button>` : ""}<button class="btn ghost sm" data-act="tl-clear">Auswahl aufheben</button></div></section>`;
+  }
+  const items = photos.map(x => {
+    const e = x.e || {};
+    const on = s.sel.includes(x.id);
+    const label = e.type ? (EV[e.type] || "Foto") : "Titelbild";
+    const conf = s.delId === x.id;
+    return `<li class="tl-item${on ? " on" : ""}">
+      <button class="tl-img" type="button" data-act="tl-sel" data-photo="${esc(x.id)}" aria-pressed="${on}" aria-label="Foto vom ${fmtDate(x.d)} ${on ? "abwählen" : "zum Vergleich wählen"}"><img src="${esc(photoUrl(x.id))}" alt="" loading="lazy">${on ? `<span class="tl-mark" aria-hidden="true">${IC.check}</span>` : ""}</button>
+      <div class="tl-main"><p class="tl-date"><b>${x.d ? esc(dateFmt(x.d, { day: "numeric", month: "long", year: "numeric" })) : "Ohne Datum"}</b> <span class="muted small">${esc(ago(x.d))}</span></p>
+        <p class="small"><span class="muted">${esc(label)}${e.by ? `, ${esc(who(e.by))}` : ""}</span> ${PHOTO_TYPES.includes(e.type) && e.health ? healthChip(e.health) : ""}${TREND[e.trend] ? ` <span class="chip c-mute">${esc(TREND[e.trend])}</span>` : ""}</p>
+        ${e.note ? `<p class="small tl-note">${esc(str(e.note, 400))}</p>` : ""}
+        ${W ? `<div class="btn-row">${p.photoId === x.id ? `<span class="muted small">Titelbild</span>` : `<button class="linkish" data-act="tl-cover" data-photo="${esc(x.id)}">Als Titelbild</button>`}<button class="linkish danger" data-act="tl-del" data-photo="${esc(x.id)}">${conf ? "Wirklich löschen?" : "Löschen"}</button></div>` : ""}
+      </div></li>`;
+  }).join("");
+  return {
+    title: `Fotos: ${nm(p)}`,
+    body: `${W && S.assets ? `<div class="btn-row"><input id="tl-cam" class="vh" type="file" accept="image/*" capture="environment"><label class="btn primary" for="tl-cam">${CAM_ICON}Foto aufnehmen</label><input id="tl-lib" class="vh" type="file" accept="image/*"><label class="btn" for="tl-lib">Aus Fotos wählen</label></div>
+        <div class="field"><label for="tl-note">Notiz zum nächsten Foto (optional)</label><input id="tl-note" data-keepval maxlength="200" placeholder="z. B. Zwei neue Blätter" autocomplete="off"></div>` : ""}
+      ${s.upBusy ? `<p class="status" role="status">Foto wird hochgeladen …</p>` : ""}
+      ${photos.length >= 2 ? `<p class="muted small">${s.sel.length === 2 ? "" : s.sel.length === 1 ? "Wähle noch ein zweites Foto zum Vergleichen." : "Tippe zwei Fotos an, um sie nebeneinander zu vergleichen."}</p>` : ""}
+      ${cmp}
+      ${photos.length ? `<ol class="timeline">${items}</ol>` : `<p class="muted">Noch keine Fotos. Fotografiere die ganze Pflanze bei Tageslicht, möglichst immer aus dem gleichen Winkel.</p>`}
+      <div class="btn-row"><button class="btn ghost" data-act="back">Zur Pflanze</button></div>`
+  };
+}
+function comparePrompt(p, older, newer, gap) {
+  return `Du bist eine erfahrene Pflanzendoktorin. Vergleiche zwei Fotos derselben Zimmerpflanze: ${nm(p)}${p.species ? ` (${str(p.species, 80)})` : ""}.
+Bild 1 ist das neuere Foto vom ${fmtDate(newer.d)}. Bild 2 ist das ältere vom ${fmtDate(older.d)}${gap !== null ? `, ${gap} Tage früher` : ""}.
+Raum: ${str(p.room, 60) || "unbekannt"}. Giessen alle ${interval(p)} Tage, Menge ${p.amount || "unbekannt"}, Licht laut Profil: ${p.light || "unbekannt"}.
+Beschreibe, was sich verändert hat: Wachstum (neue Blätter, Triebe, Grösse), Farbe, Blattverlust, Flecken, Schädlinge. Beurteile den Zustand auf Bild 1 und ob er besser oder schlechter geworden ist. Achte darauf, dass Licht und Winkel der Fotos verschieden sein können.
+Du darfst Produkte vom Schweizer Pflanzenshop feey empfehlen, aber nur aus dieser Liste und nur wenn sie wirklich passen:
+${feeyList()}
+Antworte nur mit JSON in dieser Form:
+{"health": ganze Zahl 1 bis 5 für Bild 1, "trend": "besser" | "gleich" | "schlechter" | "unklar", "growth": "Wachstum in einem Satz", "changes": ["sichtbare Veränderungen, höchstens 4"], "summary": "Fazit in 1 bis 2 Sätzen", "actions": ["konkrete nächste Schritte, höchstens 3"], "products": [{"id": "ID aus der feey-Liste", "why": "wofür, max. 80 Zeichen"}]}
+Schreibe Schweizer Hochdeutsch (ss statt ß).`;
+}
+function compareHtml(r, s) {
+  const tr = { besser: "c-ok", gleich: "c-mute", schlechter: "c-crit" }[r.trend];
+  return `<div class="ai">
+    <div class="chips">${healthChip(r.health)}${tr ? `<span class="chip ${tr}">${esc(TREND[r.trend])}</span>` : ""}</div>
+    <p>${esc(r.summary)}</p>
+    ${r.growth ? `<p><strong>Wachstum:</strong> ${esc(r.growth)}</p>` : ""}
+    ${r.changes.length ? `<div><h3>Was sich verändert hat</h3><ul>${r.changes.map(c => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
+    ${r.actions.length ? `<div><h3>Das kannst du tun</h3><ol>${r.actions.map(c => `<li>${esc(c)}</li>`).join("")}</ol></div>` : ""}
+    ${productsHtml(r.products)}
+    ${S.canWrite ? `<div class="btn-row"><button class="btn sm" data-act="tl-cmp-save"${s.cmpSaved ? " disabled" : ""}>${s.cmpSaved ? "Im Verlauf gespeichert" : "Im Verlauf speichern"}</button></div>` : ""}
+  </div>`;
+}
+async function runCompare() {
+  const s = S.sheet, p = getP(s.id);
+  if (!p || !s.sel || s.sel.length !== 2) return;
+  const photos = photosOf(p);
+  const [older, newer] = s.sel.map(id => photos.find(x => x.id === id)).sort((a, b) => photoKey(a).localeCompare(photoKey(b)));
+  s.cmpBusy = true; s.cmpErr = ""; s.cmp = null; s.cmpSaved = false; renderSheet();
+  try {
+    const blobs = [];
+    for (const x of [newer, older]) { const r = await fetch(photoUrl(x.id)); if (!r.ok) throw { code: "unavailable" }; blobs.push(await r.blob()); }
+    const gap = older.d && newer.d ? diffDays(older.d, newer.d) : null;
+    const o = await S.sample.json(comparePrompt(p, older, newer, gap), { modelTier: "default", images: blobs, cache: false, feature: "compare" });
+    if (S.sheet !== s) return;
+    const list = (a, n) => (Array.isArray(a) ? a : []).map(x => str(x, 240)).filter(Boolean).slice(0, n);
+    s.cmp = { health: clampInt(o && o.health, 1, 5, 3), trend: ["besser", "gleich", "schlechter"].includes(o && o.trend) ? o.trend : "unklar", growth: str(o && o.growth, 300),
+      changes: list(o && o.changes, 4), summary: str(o && o.summary, 500) || "Kein eindeutiger Unterschied.", actions: list(o && o.actions, 3), products: normProducts(o && o.products),
+      newerId: newer.id, newerD: newer.d, olderD: older.d };
+  } catch (e) { if (S.sheet !== s) return; s.cmpErr = aiErr(e); }
+  s.cmpBusy = false;
+  if (S.sheet === s) renderSheet();
+}
+async function saveCompare(btn) {
+  const s = S.sheet, r = s && s.cmp;
+  if (!r) return;
+  btn.disabled = true;
+  try {
+    const latest = (photosOf(getP(s.id) || {})[0] || {}).id === r.newerId;
+    const entry = mkEntry("doctor", { health: r.health, note: `Vergleich ${fmtDate(r.olderD)} mit ${fmtDate(r.newerD)}: ${r.summary}${r.growth ? ` ${r.growth}` : ""}` });
+    if (r.trend !== "unklar") entry.trend = r.trend;
+    await writePlant(s.id, cur => Object.assign({ log: pushLog(cur, entry) }, latest ? { health: r.health } : {}));
+    s.cmpSaved = true;
+    if (S.sheet === s) renderSheet();
+    toast("Vergleich im Verlauf gespeichert");
+  } catch (e) { btn.disabled = false; writeErr(e); }
+}
+async function timelineUpload(file) {
+  const s = S.sheet;
+  if (!s || s.mode !== "timeline" || !file) return;
+  const note = str(($("#tl-note") || {}).value || "", 200);
+  s.upBusy = true; renderSheet();
+  try {
+    const photoId = await uploadPhoto(file);
+    const extra = { photoId };
+    if (note) extra.note = note;
+    const entry = mkEntry("photo", extra);
+    await writePlant(s.id, cur => Object.assign({ log: pushLog(cur, entry) }, cur.photoId ? {} : { photoId }));
+    const el = $("#tl-note"); if (el) el.value = "";
+    toast("Foto gespeichert");
+  } catch (e) { toast(e && e.code === "quota_exceeded" ? writeMsg(e) : "Das Foto konnte nicht hochgeladen werden."); }
+  s.upBusy = false;
+  if (S.sheet === s) renderSheet();
+}
+async function timelineDelete(pid) {
+  const s = S.sheet;
+  if (s.delId !== pid) { s.delId = pid; renderSheet(); return; }
+  s.delId = null;
+  try {
+    await writePlant(s.id, cur => {
+      const log = logOf(cur).map(e => {
+        if (e.photoId !== pid && !(Array.isArray(e.photoIds) && e.photoIds.includes(pid))) return e;
+        const x = Object.assign({}, e);
+        if (x.photoId === pid) delete x.photoId;
+        if (Array.isArray(x.photoIds)) { x.photoIds = x.photoIds.filter(i => i !== pid); if (!x.photoIds.length) delete x.photoIds; if (!x.photoId && x.photoIds) x.photoId = x.photoIds[0]; }
+        return x;
+      }).filter(e => !(e.type === "photo" && !e.photoId && !e.note));
+      const patch = { log };
+      if (cur.photoId === pid) { const next = photosOf(Object.assign({}, cur, { log, photoId: undefined }))[0]; patch.photoId = next ? next.id : { __delete__: true }; }
+      return patch;
+    });
+    const stillUsed = S.plants.some(p => photosOf(p).some(x => x.id === pid));
+    if (!stillUsed) window.PP.deletePhoto(pid).catch(() => {});
+    s.sel = (s.sel || []).filter(i => i !== pid);
+    toast("Foto gelöscht");
+  } catch (e) { writeErr(e); }
+  if (S.sheet === s) renderSheet();
 }
 function sheetSnooze(s) {
   const p = getP(s.id) || {};
@@ -1243,6 +1613,11 @@ function sheetSnooze(s) {
       </div>
       <p class="muted small">Wenn du öfter verschiebst, schlägt die App ein längeres Giessintervall vor.</p>`
   };
+}
+function repotOptions(v) {
+  const opts = [[12, "jedes Jahr"], [24, "alle 2 Jahre"], [36, "alle 3 Jahre"], [48, "alle 4 Jahre"], [0, "keine Erinnerung"]];
+  if (!opts.some(o => o[0] === v)) opts.unshift([v, `alle ${v} Monate`]);
+  return opts.map(([m, l]) => `<option value="${m}"${m === v ? " selected" : ""}>${l}</option>`).join("");
 }
 function sheetForm(s) {
   const p = (s.id && getP(s.id)) || s.prefill || {};
@@ -1259,12 +1634,17 @@ function sheetForm(s) {
       </div>
       ${S.sample ? `<div class="suggest"><button type="button" class="btn" data-act="suggest">Pflege von Claude vorschlagen lassen</button><span id="sug-status" class="muted small" role="status"></span></div>` : ""}
       <div class="two">
-        <div class="field"><label for="f-interval">Giessen alle … Tage</label><input id="f-interval" type="number" inputmode="numeric" min="1" max="90" value="${esc(p.intervalDays ?? 7)}"></div>
+        <div class="field"><label for="f-interval">${inWater(p) ? "Wasser wechseln alle … Tage" : "Giessen alle … Tage"}</label><input id="f-interval" type="number" inputmode="numeric" min="1" max="90" value="${esc(s.id && getP(s.id) ? interval(p) : (p.intervalDays ?? 7))}"${inWater(p) ? " disabled" : ""}></div>
         <div class="field"><label for="f-amount">Menge</label><select id="f-amount">${opt(AMOUNT, p.amount || "Mittel")}</select></div>
         <div class="field"><label for="f-light">Lichtbedarf</label><select id="f-light">${opt(LIGHT, p.light || "Hell, indirekt")}</select></div>
         <div class="field"><label for="f-fert">Düngen alle … Tage (0 = pausiert)</label><input id="f-fert" type="number" inputmode="numeric" min="0" max="365" value="${esc(p.fertilizeDays ?? 0)}"></div>
       </div>
       <div class="field"><label for="f-last">Zuletzt gegossen</label><input id="f-last" type="date" max="${today()}" value="${esc(last)}"></div>
+      <div class="two">
+        <div class="field"><label for="f-repot">Umtopfen</label><select id="f-repot">${repotOptions(s.id ? SC.repotEvery(p) : clampInt(p.repotMonths, 0, 60, 24))}</select></div>
+        <div class="field"><label for="f-lastrepot">Zuletzt umgetopft</label><input id="f-lastrepot" type="date" max="${today()}" value="${esc(validYmd(p.lastRepotted) ? p.lastRepotted : "")}"></div>
+      </div>
+      ${p.spot ? `<p class="muted small"><strong>Standort:</strong> ${esc(str(p.spot, 200))}</p>` : ""}
       <div class="field"><label for="f-note">Hinweis für die Vertretung</label><textarea id="f-note" maxlength="300" placeholder="z. B. Nur von unten giessen, Untersetzer nach 15 Minuten leeren.">${esc(p.careNote)}</textarea></div>
       ${S.assets ? `<div class="field"><label for="f-photo">${p.photoId ? "Foto ersetzen" : "Foto"}</label><input id="f-photo" type="file" accept="image/*"></div>` : ""}
       <p id="f-err" class="err" role="alert"></p>
@@ -1284,9 +1664,12 @@ async function saveForm(e) {
     amount: AMOUNT.includes($("#f-amount").value) ? $("#f-amount").value : "Mittel",
     light: LIGHT.includes($("#f-light").value) ? $("#f-light").value : "Hell, indirekt",
     fertilizeDays: clampInt($("#f-fert").value, 0, 365, 0),
+    repotMonths: clampInt($("#f-repot").value, 0, 60, 24),
     careNote: str($("#f-note").value, 300)
   };
-  const last = $("#f-last").value;
+  const last = $("#f-last").value, lastRepot = $("#f-lastrepot").value;
+  if (validYmd(lastRepot)) data.lastRepotted = lastRepot;
+  else if (s.id) data.lastRepotted = { __delete__: true };
   btn.disabled = true; btn.textContent = "Speichere …"; err.textContent = "";
   try {
     const file = $("#f-photo") && $("#f-photo").files[0];
@@ -1294,7 +1677,9 @@ async function saveForm(e) {
     if (s.id) {
       const cur = getP(s.id);
       data.lastWatered = validYmd(last) ? last : { __delete__: true };
-      if (cur && interval(cur) !== data.intervalDays) data.intervalSetAt = new Date().toISOString();
+      if (cur && inWater(cur)) delete data.intervalDays;
+      else if (cur && interval(cur) !== data.intervalDays) { data.intervalSetAt = new Date().toISOString(); data.intervalRef = today(); }
+      else if (cur) delete data.intervalDays; // unverändert: Grundwert und Bezugsmonat behalten
       if (cur && cur.lastWatered !== last) data.snoozeUntil = { __delete__: true };
       await writePlant(s.id, () => data);
       if (S.sheet === s) openSheet("detail", { id: s.id });
@@ -1318,7 +1703,7 @@ async function formSuggest() {
   if (!name && !species) { st.textContent = "Gib zuerst Name oder Art ein."; return; }
   st.textContent = "Claude überlegt …";
   try {
-    const o = await S.sample.json(profilePrompt([{ name: name || species, species, room: str($("#f-room").value, 60) }]), { modelTier: "quick" });
+    const o = await S.sample.json(profilePrompt([{ name: name || species, species, room: str($("#f-room").value, 60) }]), { modelTier: "quick", feature: "profile" });
     if (S.sheet !== s) return;
     const r = normalizeProfile(Array.isArray(o) ? o[0] : o, { name, species });
     if (!species && r.species) $("#f-species").value = r.species;
@@ -1327,6 +1712,7 @@ async function formSuggest() {
     $("#f-light").value = r.light;
     $("#f-fert").value = r.fertilizeDays;
     if (!$("#f-note").value.trim() && r.careNote) $("#f-note").value = r.careNote;
+    if (!s.id) $("#f-repot").innerHTML = repotOptions(r.repotMonths);
     st.textContent = `Vorschlag eingesetzt: alle ${r.intervalDays} Tage, Menge ${r.amount.toLowerCase()}. Du kannst alles anpassen.`;
   } catch (e) { if (S.sheet === s) st.textContent = aiErr(e); }
 }
@@ -1362,7 +1748,7 @@ async function bulkSuggest() {
   go.disabled = true;
   out.innerHTML = `<p class="status">Claude stellt ${lines.length} Pflegeprofile zusammen …</p>`;
   try {
-    const arr = await S.sample.json(profilePrompt(lines), { modelTier: "quick" });
+    const arr = await S.sample.json(profilePrompt(lines), { modelTier: "quick", feature: "profile" });
     if (S.sheet !== s) return;
     const a = Array.isArray(arr) ? arr : [];
     s.items = lines.map((x, i) => normalizeProfile(a[i], x));
@@ -1471,7 +1857,7 @@ async function doctorRun() {
   s.ctl = new AbortController();
   try {
     s.blobs = blobs;
-    const opts = { modelTier: "default", signal: s.ctl.signal, cache: false };
+    const opts = { modelTier: "default", signal: s.ctl.signal, cache: false, feature: "doctor" };
     if (blobs.length) opts.images = blobs;
     const r = await S.sample.json(doctorPrompt(p, text, blobs.length), opts);
     if (S.sheet !== s) return;
@@ -1513,7 +1899,7 @@ async function doctorSave() {
 async function setInterval_(id, days, btn, doneText) {
   if (btn) btn.disabled = true;
   try {
-    await writePlant(id, () => ({ intervalDays: days, intervalSetAt: new Date().toISOString() }));
+    await writePlant(id, () => ({ intervalDays: days, intervalRef: today(), intervalSetAt: new Date().toISOString() }));
     if (btn && doneText) btn.textContent = doneText;
     toast(`Giessintervall jetzt alle ${days} Tage`);
   } catch (e) { if (btn) btn.disabled = false; writeErr(e); }
@@ -1616,8 +2002,9 @@ function sheetScan(s) {
       ${d.alternatives.length ? `<p class="muted small">Oder ist es eher …</p><div class="pills pills-wrap">${d.alternatives.map((a, i) => `<button class="pill" type="button" data-act="scan-alt" data-i="${i}">${esc(a.name)}</button>`).join("")}</div><p id="s-alt-status" class="muted small" role="status"></p>` : ""}
       ${d.healthNote ? `<p class="note">${esc(d.healthNote)}</p>` : ""}
     </div>
+    ${d.spot ? `<p class="note"><strong>Bester Standort:</strong> ${esc(d.spot)}</p>` : ""}
     <fieldset class="field"><legend style="font-size:1.0625rem">In welchem Raum steht sie?</legend>
-      ${rooms.length ? `<div class="pills pills-wrap" id="s-rooms">${rooms.map(r => `<button type="button" class="pill" data-act="scan-room" data-room="${esc(r)}" aria-pressed="${d.room === r}">${esc(r)}</button>`).join("")}</div>` : ""}
+      ${rooms.length ? `<div class="pills pills-wrap" id="s-rooms">${rooms.map(r => `<button type="button" class="pill" data-act="scan-room" data-room="${esc(r)}" aria-pressed="${d.room === r}">${esc(r)}${r === d.suggestedRoom ? " · passt gut" : ""}</button>`).join("")}</div>` : ""}
       <input id="s-room" maxlength="60" placeholder="${rooms.length ? "Oder neuen Raum eintippen" : "z. B. Wohnzimmer"}" value="${esc(rooms.includes(d.room) ? "" : d.room)}" autocomplete="off" aria-label="Raum">
     </fieldset>
     <div class="panel compact">
@@ -1637,6 +2024,7 @@ function sheetScan(s) {
       </div>
     </details>
     <div class="field"><label for="s-last">Zuletzt gegossen</label><select id="s-last"><option value="today">Heute</option><option value="due">Weiss nicht: heute prüfen</option></select></div>
+    ${S.sample ? `<label class="inline"><input type="checkbox" id="s-new"${s.fromNew ? " checked" : ""}> Gerade gekauft: Anleitung für die ersten Wochen, Umtopfen und Erde zeigen</label>` : ""}
     <p id="s-err" class="err" role="alert"></p>
     <div class="actions"><button class="btn primary" data-act="scan-save" data-next="1">Speichern und nächste</button><button class="btn" data-act="scan-save">Speichern</button></div>`
   };
@@ -1668,7 +2056,7 @@ async function startScan(file) {
   renderSheet();
   s.ctl = new AbortController();
   try {
-    const r = await S.sample.json(identifyPrompt(), { modelTier: "default", images: [s.blob], signal: s.ctl.signal, cache: false });
+    const r = await S.sample.json(identifyPrompt(), { modelTier: "default", images: [s.blob], signal: s.ctl.signal, cache: false, feature: "scan" });
     if (S.sheet !== s) return;
     if (r && typeof r === "object" && r.error && !r.species) {
       s.stage = "error"; s.error = `Auf dem Foto ist keine Pflanze zu erkennen (${str(r.error, 140)}). Versuch es mit mehr Abstand und Licht.`;
@@ -1689,7 +2077,7 @@ async function scanAlt(i, btn) {
   btn.disabled = true;
   if (st) st.textContent = `Lade Pflege für ${a.name} …`;
   try {
-    const o = await S.sample.json(profilePrompt([{ name: a.name, species: a.species }]), { modelTier: "quick" });
+    const o = await S.sample.json(profilePrompt([{ name: a.name, species: a.species }]), { modelTier: "quick", feature: "profile" });
     if (S.sheet !== s) return;
     const prof = normalizeProfile(Array.isArray(o) ? o[0] : o, { name: a.name, species: a.species, room: d.room });
     const old = { name: d.name, species: d.species };
@@ -1713,7 +2101,10 @@ async function scanSave(next, btn) {
   try {
     let photoId = null;
     if (S.assets && s.blob) { btn.textContent = "Lade Foto hoch …"; photoId = await uploadPhoto(s.blob, true); }
-    const data = { name, species: d.species, room: d.room, intervalDays: d.intervalDays, amount: d.amount, light: d.light, fertilizeDays: d.fertilizeDays, careNote: d.careNote };
+    const data = { name, species: d.species, room: d.room, intervalDays: d.intervalDays, amount: d.amount, light: d.light, fertilizeDays: d.fertilizeDays, repotMonths: d.repotMonths, careNote: d.careNote };
+    if (d.spot) data.spot = d.spot;
+    const isNew = !!($("#s-new") && $("#s-new").checked);
+    if (isNew) data.lastRepotted = today(); // frisch gekauft: Umtopf-Plan ab heute
     if (photoId) data.photoId = photoId;
     if (d.health) data.health = d.health;
     if ($("#s-last").value === "today") data.lastWatered = today();
@@ -1726,7 +2117,8 @@ async function scanSave(next, btn) {
     S.lastRoom = d.room;
     if (s.preview) { try { URL.revokeObjectURL(s.preview); } catch { /* ignore */ } }
     if (S.sheet !== s) return;
-    if (next) { openSheet("scan", { count: (s.count || 0) + 1 }); toast(`${name} gespeichert`); }
+    if (next) { openSheet("scan", { count: (s.count || 0) + 1, fromNew: s.fromNew }); toast(`${name} gespeichert`); }
+    else if (isNew && S.sample) { openGuide({ id, isNew: true }); toast(`${name} hinzugefügt`); }
     else { openSheet("detail", { id }); toast(`${name} hinzugefügt`); }
   } catch (ex) {
     if (ex && ex.code === "invalid_argument") { S.canWrite = false; render(); }
@@ -1806,7 +2198,7 @@ async function runPhotoCheck(file) {
   }
   s.ctl = new AbortController();
   try {
-    const raw = await S.sample.json(doctorPrompt(p, s.text, images.length, prevDate), { modelTier: "default", images, signal: s.ctl.signal, cache: false });
+    const raw = await S.sample.json(doctorPrompt(p, s.text, images.length, prevDate), { modelTier: "default", images, signal: s.ctl.signal, cache: false, feature: "photocheck" });
     if (S.sheet !== s) return;
     s.result = normalizeDiag(raw);
     s.stage = "result";
@@ -1870,7 +2262,7 @@ app.addEventListener("click", e => {
     if (st.hasAttribute("data-export")) return doExport(st);
     return acctAction(st.dataset.acct, st);
   }
-  const t = e.target.closest("[data-find],[data-have],[data-guide],[data-guide-name],[data-adopt],[data-fert-all],[data-water],[data-snooze],[data-fert],[data-doctor],[data-water-all],[data-new],[data-bulk],[data-scan],[data-add],[data-sketch-all],[data-sketch-stop],[data-photo-every],[data-day],[data-room],[data-copy-plan],[data-open]");
+  const t = e.target.closest("[data-find],[data-have],[data-guide],[data-guide-name],[data-adopt],[data-fert-all],[data-water],[data-snooze],[data-fert],[data-doctor],[data-water-all],[data-new],[data-bulk],[data-scan],[data-add],[data-sketch-all],[data-sketch-stop],[data-photo-every],[data-day],[data-room],[data-copy-plan],[data-scan-new],[data-repot],[data-repot-later],[data-open]");
   if (!t) return;
   if (t.hasAttribute("data-find")) return runFinder();
   if (t.hasAttribute("data-have")) { const n = str(S.finder.have, 60); if (n) openGuide({ name: n }); else { const el = $("#n-have"); if (el) el.focus(); } return; }
@@ -1881,7 +2273,10 @@ app.addEventListener("click", e => {
     return t.hasAttribute("data-adopt") ? openSheet("form", { prefill: { name: x.name, species: x.species, room: S.finder.room } }) : openGuide({ name: x.name, species: x.species });
   }
   if (t.hasAttribute("data-fert-all")) return fertAll();
+  if (t.hasAttribute("data-repot")) return repot(t.dataset.repot);
+  if (t.hasAttribute("data-repot-later")) return repotLater(t.dataset.repotLater);
   if (t.hasAttribute("data-scan")) return openSheet("scan", {});
+  if (t.hasAttribute("data-scan-new")) return openSheet("scan", { fromNew: true });
   if (t.hasAttribute("data-add")) return openSheet("add", {});
   if (t.hasAttribute("data-sketch-all")) return sketchAll();
   if (t.hasAttribute("data-sketch-stop")) { if (S.batch) { S.batch.stop = true; render(); } return; }
@@ -1958,6 +2353,25 @@ panel.addEventListener("click", e => {
     case "snooze-n": snooze(id, clampInt(a.dataset.days, 1, 14, 1)); if (s.from === "detail") openSheet("detail", { id }); else closeSheet(); break;
     case "fert": fertilize(id); break;
     case "repot": repot(id); break;
+    case "potted": potted(id); break;
+    case "cutting": openSheet("cutting", { id }); break;
+    case "open-plant": openSheet("detail", { id: a.dataset.id }); break;
+    case "timeline": openSheet("timeline", { id, sel: [] }); break;
+    case "tl-sel": {
+      const pid = a.dataset.photo;
+      s.sel = s.sel || [];
+      if (s.sel.includes(pid)) s.sel = s.sel.filter(x => x !== pid);
+      else { s.sel.push(pid); if (s.sel.length > 2) s.sel.shift(); }
+      s.cmp = null; s.cmpErr = ""; s.cmpSaved = false; s.delId = null;
+      renderSheet();
+      if (s.sel.length === 2) { const c = $("#cmp"); if (c && c.scrollIntoView) c.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+      break;
+    }
+    case "tl-clear": s.sel = []; s.cmp = null; s.cmpErr = ""; renderSheet(); break;
+    case "tl-compare": runCompare(); break;
+    case "tl-cmp-save": saveCompare(a); break;
+    case "tl-cover": writePlant(id, () => ({ photoId: a.dataset.photo })).then(() => { toast("Titelbild geändert"); if (S.sheet === s) renderSheet(); }).catch(writeErr); break;
+    case "tl-del": timelineDelete(a.dataset.photo); break;
     case "checkin": openSheet("checkin", { id }); break;
     case "doctor": openSheet("doctor", { id }); break;
     case "guide": openGuide({ id }); break;
@@ -2013,6 +2427,7 @@ panel.addEventListener("change", e => {
   const file = e.target.files && e.target.files[0];
   if ((id === "scan-cam" || id === "scan-lib") && file) startScan(file);
   if ((id === "pc-cam" || id === "pc-lib") && file) runPhotoCheck(file);
+  if ((id === "tl-cam" || id === "tl-lib") && file) { timelineUpload(file); e.target.value = ""; }
   if ((id === "d-cam" || id === "d-lib") && e.target.files.length) { docAddFiles([...e.target.files]); e.target.value = ""; }
 });
 panel.addEventListener("input", e => {
@@ -2027,14 +2442,15 @@ panel.addEventListener("input", e => {
     if (pr) pr.innerHTML = profileChips(s.draft);
   }
 });
-async function savePhotoEvery(v) {
+async function saveSetting(patch, msg) {
   if (!S.canWrite) return;
-  const prev = S.settings.photoCheckDays;
-  S.settings = Object.assign({}, S.settings, { photoCheckDays: v });
+  const prev = S.settings;
+  S.settings = Object.assign({}, S.settings, patch);
   render();
-  try { await S.db.doc("settings/app").set({ photoCheckDays: v }); toast(v ? `Foto-Check alle ${v} Tage` : "Foto-Check ausgeschaltet"); }
-  catch (e) { S.settings = Object.assign({}, S.settings, { photoCheckDays: prev }); render(); writeErr(e); }
+  try { await S.db.doc("settings/app").set(Object.assign({}, S.settings)); toast(msg); }
+  catch (e) { S.settings = prev; render(); writeErr(e); }
 }
+const savePhotoEvery = v => saveSetting({ photoCheckDays: v }, v ? `Foto-Check alle ${v} Tage` : "Foto-Check ausgeschaltet");
 sheetEl.addEventListener("click", e => { if (e.target === sheetEl) closeSheet(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && S.sheet) closeSheet(); });
 window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });
@@ -2055,7 +2471,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && S.
   if (!db) { clearTimeout(timer); S.dbMissing = true; S.canWrite = false; S.loaded = true; render(); return; }
   db.doc("settings/app").onSnapshot(snap => {
     const d = snap.exists ? snap.data() : {};
-    S.settings = { photoCheckDays: clampInt(d && d.photoCheckDays, 0, 90, 14) };
+    S.settings = { photoCheckDays: clampInt(d && d.photoCheckDays, 0, 90, 14), seasonal: !(d && d.seasonal === false) };
     if (S.loaded) render();
   }, () => {});
   db.collection("plants").onSnapshot(snap => {
