@@ -1,9 +1,15 @@
-// Lokaler Testserver: liefert die App aus public/ und die KI-Funktion unter /api/claude.
-// Start: npm run dev  (optional mit ANTHROPIC_API_KEY und APP_PASSWORD in der Umgebung)
+// Lokaler Testserver: liefert die App aus public/ und die Serverfunktionen unter /api/….
+// Start: npm run dev  (ohne KV_REST_API_URL/KV_REST_API_TOKEN liegen die Daten nur im Arbeitsspeicher)
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
-import handler from "./api/claude.js";
+import claude from "./api/claude.js";
+import auth from "./api/auth.js";
+import household from "./api/household.js";
+import data from "./api/data.js";
+import photo from "./api/photo.js";
+
+const API = { "/api/claude": claude, "/api/auth": auth, "/api/household": household, "/api/data": data, "/api/photo": photo };
 
 const PORT = Number(process.env.PORT) || 3000;
 const ROOT = join(process.cwd(), "public");
@@ -11,11 +17,12 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 
 createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
-  if (url.pathname === "/api/claude") {
+  if (API[url.pathname]) {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     try { req.body = raw ? JSON.parse(raw) : {}; } catch { req.body = {}; }
-    return handler(req, res);
+    req.query = Object.fromEntries(url.searchParams);
+    return API[url.pathname](req, res);
   }
   const path = normalize(url.pathname === "/" ? "/index.html" : url.pathname).replace(/^(\.\.[/\\])+/, "");
   try {

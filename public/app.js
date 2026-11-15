@@ -33,6 +33,7 @@ const feeyList = () => Object.entries(FEEY).map(([id, x]) => `- ${id}: ${x.name}
 
 const S = {
   db: null, user: null, assets: null, sample: null, imgLimits: null, uid: null,
+  acct: { invite: null, err: "", busy: "", keyEdit: false, pwEdit: false, nameEdit: false, leave: false },
   canWrite: true, plants: [], loaded: false, stale: false, dbMissing: false, dbError: null,
   names: {}, sheet: null, day: 0, filter: { q: "", room: "" }, plan: null, prevM: {},
   settings: { photoCheckDays: 14 }, lastRoom: "",
@@ -458,9 +459,13 @@ async function uploadPhoto(fileOrBlob, alreadyShrunk) {
 function aiErr(e) {
   const c = e && e.code;
   return ({
-    not_granted: "Das KI-Passwort fehlt oder stimmt nicht. Trag es unter «Verlauf» bei «Einstellungen» ein.",
+    not_granted: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn unter «Verlauf» bei «Einstellungen» ein.",
+    no_key: "Für die KI-Funktionen braucht dein Haushalt einen Anthropic-Schlüssel. Trag ihn unter «Verlauf» bei «Einstellungen» ein.",
+    key_rejected: "Anthropic lehnt den hinterlegten Schlüssel ab. Ersetze ihn unter «Verlauf» bei «Einstellungen».",
+    no_credit: "Auf dem Anthropic-Konto deines Haushalts ist kein Guthaben mehr. Lade es auf console.anthropic.com auf.",
     network: "Keine Verbindung. Prüfe das Internet und versuch es nochmals.",
     sampling_disabled: "Claude ist für dieses Konto hier nicht verfügbar.",
+    unavailable: "Der Server antwortet gerade nicht. Versuch es gleich nochmals.",
     rate_limited: "Gerade zu viele Anfragen. Versuch es in einer Minute nochmals.",
     image_rejected: "Dieses Foto geht nicht. Versuch ein anderes (JPEG oder PNG).",
     images_unavailable: "Fotos können hier nicht an Claude geschickt werden. Beschreib das Problem in Worten.",
@@ -567,7 +572,7 @@ function view() { const h = location.hash.slice(1); return VIEWS.includes(h) ? h
 
 function banner() {
   const b = [];
-  if (S.dbMissing) b.push("Der Speicher dieses Browsers ist nicht verfügbar. In einem privaten Fenster geht das nicht. Öffne die App in einem normalen Fenster.");
+  if (S.dbMissing) b.push("Die Daten sind gerade nicht erreichbar. Lade die Seite neu.");
   else if (S.dbError) b.push("Die Daten konnten nicht geladen werden. Lade die Seite später neu.");
   else if (S.stale) b.push(S.plants.length ? "Keine Verbindung zum Speicher. Die Angaben sind evtl. nicht aktuell." : "Die Pflanzen lassen sich gerade nicht laden. Prüfe die Verbindung.");
   if (!S.canWrite && !S.dbMissing) b.push("Du kannst hier nur ansehen. Zum Abhaken brauchst du Bearbeitungsrechte vom Besitzer der Seite.");
@@ -933,24 +938,137 @@ function renderHistory() {
   }).join("")}</ul>`)).join("") + settingsPanel();
 }
 
-/* ---------- settings: KI-Zugang, Sicherung, Installation ---------- */
+/* ---------- settings: Haushalt, KI-Schlüssel, Konto, Sicherung, Installation ---------- */
 function settingsPanel() {
-  const ai = window.PP.ai;
-  const pw = window.PP.getPw();
-  let aiBody;
-  if (!ai.configured) aiBody = `<p class="muted">Auf diesem Server ist kein Anthropic-API-Schlüssel hinterlegt. Ohne Schlüssel funktioniert alles ausser Skizzen, Pflanzendoktor, Foto-Erkennung und Pflanzenfinder. Die Anleitung steht im README des Repos.</p>`;
-  else if (ai.authed) aiBody = `<p><span class="chip c-ok">Verbunden</span> Claude ist auf diesem Gerät freigeschaltet.</p><div class="btn-row"><button class="btn ghost sm" data-pw-clear>Passwort auf diesem Gerät entfernen</button></div>`;
-  else aiBody = `<p class="muted">Gib das App-Passwort ein, das beim Hosting hinterlegt ist. Es bleibt nur auf diesem Gerät gespeichert.</p>
-    <div class="field"><label for="pw-in">App-Passwort</label><input id="pw-in" type="password" autocomplete="current-password" value="${esc(pw)}"></div>
-    ${ai.error ? `<p class="err">${esc(ai.error)}</p>` : ""}
-    <div class="btn-row"><button class="btn primary" data-pw-save>Freischalten</button></div>`;
+  const me = window.PP.me;
+  if (!me) return "";
+  const hh = me.household, A = S.acct, busy = k => A.busy === k ? " disabled" : "";
+  const solo = hh.members.length <= 1;
+  const ai = hh.ai;
+  const inviteUrl = A.invite ? `${location.origin}/#einladung=${A.invite.code}` : "";
+  const legacyN = window.PP.legacy.done ? 0 : window.PP.legacy.count;
+
+  const hhBody = `<div><h3>Haushalt</h3>
+    ${A.nameEdit ? `<div class="field"><label for="hh-name">Name des Haushalts</label><input id="hh-name" data-keepval maxlength="60" value="${esc(hh.name)}"></div>
+      <div class="btn-row"><button class="btn primary sm" data-acct="hh-name-save"${busy("hh-name-save")}>Speichern</button><button class="btn ghost sm" data-acct="hh-name-cancel">Abbrechen</button></div>`
+    : `<p class="hh-name"><b>${esc(hh.name)}</b> <button class="btn ghost sm" data-acct="hh-name-edit">Umbenennen</button></p>`}
+    <ul class="members">${hh.members.map(m => `<li><span class="avatar" aria-hidden="true">${esc((m.name || "?").slice(0, 1).toUpperCase())}</span>${esc(m.name)}${m.me ? ` <span class="muted small">du</span>` : ""}</li>`).join("")}</ul>
+    <p class="muted">${solo ? "Lade die Person ein, mit der du die Pflanzen teilst. Ihr seht und pflegt dann dieselben Pflanzen, jede Person mit ihrem eigenen Konto und Gerät." : "Alle hier sehen und pflegen dieselben Pflanzen. Im Verlauf steht, wer was gemacht hat."}</p>
+    ${A.invite ? `<div class="invite"><p>Einladungscode <b class="code">${esc(A.invite.code)}</b>, gültig ${A.invite.days} Tage.</p>
+        <input id="inv-url" readonly value="${esc(inviteUrl)}" aria-label="Einladungslink">
+        <div class="btn-row"><button class="btn primary sm" data-acct="inv-share">Link teilen</button><button class="btn sm" data-acct="inv-copy">Link kopieren</button></div></div>`
+      : `<div class="btn-row"><button class="btn" data-acct="invite"${busy("invite")}>Person einladen</button></div>`}
+    <details class="more"><summary>Einem anderen Haushalt beitreten</summary>
+      <p class="muted small">${solo ? "Deine Pflanzen nimmst du mit in den neuen Haushalt." : "Deine Pflanzen bleiben bei den anderen in diesem Haushalt."}</p>
+      <div class="field"><label for="join-code">Einladungscode</label><input id="join-code" data-keepval autocapitalize="characters" spellcheck="false" maxlength="12"></div>
+      <div class="btn-row"><button class="btn sm" data-acct="join"${busy("join")}>Beitreten</button></div>
+    </details>
+    ${solo ? "" : `<div class="btn-row"><button class="btn danger sm" data-acct="leave"${busy("leave")}>${A.leave ? "Ja, Haushalt verlassen" : "Haushalt verlassen"}</button></div>${A.leave ? `<p class="muted small">Du startest dann mit einem leeren Haushalt. Die Pflanzen bleiben hier bei den anderen.</p>` : ""}`}
+  </div>`;
+
+  const keyForm = `<div class="field"><label for="key-in">Anthropic-API-Schlüssel</label><input id="key-in" data-keepval type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…"></div>
+    <div class="btn-row"><button class="btn primary sm" data-acct="key-save"${busy("key-save")}>${A.busy === "key-save" ? "Wird geprüft …" : "Speichern"}</button>${ai ? `<button class="btn ghost sm" data-acct="key-cancel">Abbrechen</button>` : ""}</div>`;
+  const aiBody = `<div><h3>KI-Zugang</h3>
+    ${ai && !A.keyEdit ? `<p><span class="chip c-ok">Verbunden</span> Schlüssel <code>${esc(ai.hint)}</code>${ai.by ? `, hinterlegt von ${esc(ai.by)}` : ""}.</p>
+      <p class="muted">Skizzen, Pflanzendoktor, Foto-Erkennung und Pflanzenfinder laufen über dieses Anthropic-Konto. Die Kosten gehen dorthin, für alle im Haushalt.</p>
+      <div class="btn-row"><button class="btn sm" data-acct="key-edit">Schlüssel ersetzen</button><button class="btn danger sm" data-acct="key-remove"${busy("key-remove")}>Entfernen</button></div>`
+    : `<p class="muted">Jeder Haushalt bezahlt seine KI-Anfragen selbst. Erstelle auf <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> einen API-Schlüssel, lade etwas Guthaben auf und trag den Schlüssel hier ein. Er wird verschlüsselt gespeichert und ist danach für niemanden mehr lesbar, auch nicht für dich.</p>${keyForm}`}
+  </div>`;
+
+  const acctBody = `<div><h3>Konto</h3>
+    <p>Angemeldet als <b>${esc(me.user.name)}</b> <span class="muted">(${esc(me.user.login)})</span></p>
+    ${A.pwEdit ? `<div class="field"><label for="pw-old">Bisheriges Passwort</label><input id="pw-old" data-keepval type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="pw-new">Neues Passwort</label><input id="pw-new" data-keepval type="password" autocomplete="new-password" minlength="8"></div>
+      <div class="btn-row"><button class="btn primary sm" data-acct="pw-save"${busy("pw-save")}>Passwort ändern</button><button class="btn ghost sm" data-acct="pw-cancel">Abbrechen</button></div>`
+    : `<div class="btn-row"><button class="btn sm" data-acct="pw-edit">Passwort ändern</button><button class="btn sm" data-acct="logout">Abmelden</button></div>`}
+  </div>`;
+
   const standalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
   return `<section class="panel" id="settings"><h2>Einstellungen</h2>
-    <div><h3>KI-Zugang</h3>${aiBody}</div>
-    <div><h3>Daten sichern</h3><p class="muted">Deine Pflanzen sind nur in diesem Browser gespeichert. Mach ab und zu eine Sicherung, und nutze sie, um die Pflanzen auf ein anderes Gerät zu übertragen.</p>
-      <div class="btn-row" style="margin-top:10px"><button class="btn" data-export>Sicherung herunterladen</button><input id="imp-file" class="vh" type="file" accept="application/json,.json"><label class="btn" for="imp-file">Sicherung einlesen</label></div></div>
+    ${A.err ? `<p class="err" role="alert">${esc(A.err)}</p>` : ""}
+    ${hhBody}
+    ${aiBody}
+    ${acctBody}
+    <div><h3>Daten sichern</h3><p class="muted">Die Pflanzen sind auf dem Server gespeichert und auf allen Geräten im Haushalt gleich. Eine Sicherung als Datei schadet trotzdem nicht. Beim Einlesen bleiben Pflanzen, die es schon gibt, unverändert.</p>
+      <div class="btn-row" style="margin-top:10px"><button class="btn" data-export>Sicherung herunterladen</button><input id="imp-file" class="vh" type="file" accept="application/json,.json"><label class="btn" for="imp-file">Sicherung einlesen</label>${legacyN ? `<button class="btn" data-acct="legacy"${busy("legacy")}>${legacyN === 1 ? "1 Pflanze" : legacyN + " Pflanzen"} aus diesem Browser übernehmen</button>` : ""}</div></div>
     ${standalone ? "" : `<div><h3>Auf den Homescreen</h3><p class="muted">iPhone: In Safari auf «Teilen» tippen, dann «Zum Home-Bildschirm». Android: Im Chrome-Menü «App installieren» wählen.</p></div>`}
   </section>`;
+}
+async function acctAction(act, btn) {
+  const A = S.acct, P = window.PP, acc = P.account;
+  const val = id => { const el = $("#" + id); return el ? el.value.trim() : ""; };
+  const run = async (fn, okMsg) => {
+    A.busy = act; A.err = ""; render();
+    try { const r = await fn(); A.busy = ""; if (okMsg) toast(typeof okMsg === "function" ? okMsg(r) : okMsg); render(); return r; }
+    catch (e) { A.busy = ""; A.err = keyErr(e) || P.errText(e); render(); return undefined; }
+  };
+  if (act !== "leave") A.leave = false;
+  switch (act) {
+    case "hh-name-edit": A.nameEdit = true; render(); { const el = $("#hh-name"); if (el) el.focus(); } return;
+    case "hh-name-cancel": A.nameEdit = false; render(); return;
+    case "hh-name-save": { const v = val("hh-name"); if (!v) return; A.nameEdit = false; return run(() => acc.renameHousehold(v), "Haushalt umbenannt"); }
+    case "invite": { const r = await run(() => acc.invite()); if (r) { A.invite = r; render(); } return; }
+    case "inv-copy": {
+      const el = $("#inv-url");
+      try { await navigator.clipboard.writeText(el.value); toast("Link kopiert"); } catch { el.select(); toast("Link markiert. Jetzt kopieren."); }
+      return;
+    }
+    case "inv-share": {
+      const url = $("#inv-url").value;
+      const text = `Komm in unseren Pflanzen-Haushalt «${P.me.household.name}». Öffne den Link und erstelle ein Konto (Code ${A.invite.code}):`;
+      if (navigator.share) { try { await navigator.share({ title: "Pflanzenpflege", text, url }); } catch { /* abgebrochen */ } }
+      else { try { await navigator.clipboard.writeText(text + " " + url); toast("Einladung kopiert"); } catch { toast("Teilen geht hier nicht. Kopiere den Link."); } }
+      return;
+    }
+    case "join": {
+      const code = val("join-code");
+      if (!code) { const el = $("#join-code"); if (el) el.focus(); return; }
+      const r = await run(() => acc.join(code));
+      if (r) { toast(`Du bist jetzt im Haushalt «${r.household.name}»`); setTimeout(() => location.reload(), 900); }
+      return;
+    }
+    case "leave": {
+      if (!A.leave) { A.leave = true; render(); return; }
+      A.leave = false;
+      const r = await run(() => acc.leave());
+      if (r) location.reload();
+      return;
+    }
+    case "key-edit": A.keyEdit = true; render(); { const el = $("#key-in"); if (el) el.focus(); } return;
+    case "key-cancel": A.keyEdit = false; render(); return;
+    case "key-save": {
+      const k = val("key-in");
+      if (!k) { const el = $("#key-in"); if (el) el.focus(); return; }
+      const ok = await run(() => acc.setKey(k).then(() => true));
+      if (ok) { A.keyEdit = false; toast("KI-Zugang eingerichtet"); setTimeout(() => location.reload(), 700); }
+      return;
+    }
+    case "key-remove": {
+      const ok = await run(() => acc.removeKey().then(() => true));
+      if (ok) { toast("Schlüssel entfernt"); setTimeout(() => location.reload(), 700); }
+      return;
+    }
+    case "pw-edit": A.pwEdit = true; render(); { const el = $("#pw-old"); if (el) el.focus(); } return;
+    case "pw-cancel": A.pwEdit = false; render(); return;
+    case "pw-save": {
+      const o = ($("#pw-old") || {}).value || "", n = ($("#pw-new") || {}).value || "";
+      if (n.length < 8) { A.err = "Das neue Passwort braucht mindestens 8 Zeichen."; render(); return; }
+      const ok = await run(() => acc.password(o, n).then(() => true), "Passwort geändert");
+      if (ok) { A.pwEdit = false; render(); }
+      return;
+    }
+    case "logout": btn.disabled = true; return acc.logout();
+    case "legacy":
+      return run(() => P.migrateLegacy(), r => r.skipped ? `${plural(r.added, "Pflanze", "Pflanzen")} übernommen, ${r.skipped} waren schon da` : `${plural(r.added, "Pflanze", "Pflanzen")} übernommen`);
+  }
+}
+function keyErr(e) {
+  const c = e && e.code;
+  if (c === "key_invalid") return "Das sieht nicht wie ein Anthropic-Schlüssel aus. Er beginnt mit «sk-ant-».";
+  if (c === "key_rejected") return "Anthropic kennt diesen Schlüssel nicht. Prüfe, ob du ihn vollständig kopiert hast.";
+  if (c === "wrong_login") return "Das bisherige Passwort stimmt nicht.";
+  if (c === "last_member") return "Du bist allein in diesem Haushalt.";
+  return "";
 }
 async function doExport(btn) {
   btn.disabled = true;
@@ -967,20 +1085,13 @@ async function doExport(btn) {
   btn.disabled = false;
 }
 async function doImport(file) {
+  let obj;
+  try { obj = JSON.parse(await file.text()); } catch { toast("Diese Datei ist keine gültige Sicherung."); return; }
   try {
-    const obj = JSON.parse(await file.text());
+    toast("Sicherung wird eingelesen …");
     const n = await window.PP.importData(obj);
     toast(`${plural(n, "Pflanze", "Pflanzen")} eingelesen`);
-  } catch { toast("Diese Datei ist keine gültige Sicherung."); }
-}
-async function savePw() {
-  const el = $("#pw-in");
-  const v = el ? el.value.trim() : "";
-  if (!v) { if (el) el.focus(); return; }
-  window.PP.setPw(v);
-  await window.PP.checkAi();
-  if (window.PP.ai.authed) { toast("KI-Zugang freigeschaltet"); location.reload(); }
-  else render();
+  } catch (e) { toast(e && e.code === "bad_file" ? "Diese Datei ist keine gültige Sicherung." : writeMsg(e)); }
 }
 function render() {
   const v = view();
@@ -996,7 +1107,10 @@ function render() {
   else if (!S.dbMissing) h += ({ heute: renderToday, pflanzen: renderPlants, neu: renderNew, plan: renderPlan, verlauf: renderHistory })[v]();
   const keep = {};
   app.querySelectorAll("[data-keep]").forEach(el => { keep[el.dataset.keep] = el.scrollLeft; });
+  const vals = {};
+  app.querySelectorAll("input[data-keepval]").forEach(el => { vals[el.id] = el.value; });
   app.innerHTML = h;
+  app.querySelectorAll("input[data-keepval]").forEach(el => { if (vals[el.id]) el.value = vals[el.id]; });
   app.querySelectorAll("[data-keep]").forEach(el => { if (keep[el.dataset.keep] != null) el.scrollLeft = keep[el.dataset.keep]; });
   if (fid) {
     const el = document.getElementById(fid);
@@ -1750,11 +1864,11 @@ async function copyPlan(btn) {
 }
 app.addEventListener("click", e => {
   if (e.target.closest("label, input, select, textarea")) return;
-  const st = e.target.closest("[data-export],[data-pw-save],[data-pw-clear]");
+  if (e.target.closest("summary")) return;
+  const st = e.target.closest("[data-export],[data-acct]");
   if (st) {
     if (st.hasAttribute("data-export")) return doExport(st);
-    if (st.hasAttribute("data-pw-save")) return savePw();
-    if (st.hasAttribute("data-pw-clear")) { window.PP.setPw(""); location.reload(); return; }
+    return acctAction(st.dataset.acct, st);
   }
   const t = e.target.closest("[data-find],[data-have],[data-guide],[data-guide-name],[data-adopt],[data-fert-all],[data-water],[data-snooze],[data-fert],[data-doctor],[data-water-all],[data-new],[data-bulk],[data-scan],[data-add],[data-sketch-all],[data-sketch-stop],[data-photo-every],[data-day],[data-room],[data-copy-plan],[data-open]");
   if (!t) return;
@@ -1791,7 +1905,8 @@ app.addEventListener("click", e => {
   if (t.hasAttribute("data-open")) return openSheet("detail", { id: t.dataset.open });
 });
 app.addEventListener("keydown", e => {
-  if (e.key === "Enter" && e.target.id === "pw-in") { e.preventDefault(); savePw(); return; }
+  const enterAct = { "key-in": "key-save", "join-code": "join", "hh-name": "hh-name-save", "pw-new": "pw-save" }[e.target.id];
+  if (e.key === "Enter" && enterAct) { e.preventDefault(); acctAction(enterAct, e.target); return; }
   if (e.key === "Enter" && e.target.id === "n-have") { e.preventDefault(); const n = str(e.target.value, 60); if (n) openGuide({ name: n }); return; }
   if ((e.key === "Enter" || e.key === " ") && e.target.matches("li[data-open]")) { e.preventDefault(); openSheet("detail", { id: e.target.dataset.open }); }
 });
