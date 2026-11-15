@@ -1,0 +1,14 @@
+{
+  "name": "pflanzenpflege",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pflanzenpflege als Web-App (PWA): Giessplan, Kalender, Pflanzendoktor und Hilfe für neue Pflanzen.",
+  "scripts": {
+    "dev": "node dev-server.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0"
+  }
+}
