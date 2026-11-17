@@ -29,7 +29,10 @@ Für die KI-Funktionen hinterlegt **jeder Haushalt seinen eigenen Anthropic-API-
    - `APP_SECRET`: eine lange Zufallszeichenkette, z. B. aus `openssl rand -base64 32`. Damit werden die API-Schlüssel der Haushalte verschlüsselt. Fehlt sie, wird der Redis-Token dafür verwendet. **Später nicht mehr ändern**, sonst müssen alle Haushalte ihren Schlüssel neu eintragen.
    - `SIGNUP_CODE`: ein Code, den man für einen neuen Haushalt braucht. So können nur Leute, denen du den Code gibst, Konten anlegen. Wer per Einladung einem bestehenden Haushalt beitritt, braucht ihn nicht.
    - `CLAUDE_MODEL`: anderes Modell als `claude-opus-5-5`, z. B. `claude-sonnet-5-5` (günstiger).
-   - `CLAUDE_SKETCH_MODEL`: Modell für die Skizzen, Standard `claude-haiku-5-5` (sehr günstig).
+   - `CLAUDE_SKETCH_MODEL`: Modell für die Skizzen, Standard wie `CLAUDE_CHEAP_MODEL`.
+   - `CLAUDE_CHEAP_MODEL`: Modell für Skizzen, Foto-Erkennung und Pflegevorschläge, Standard `claude-haiku-5-5`.
+   - `CLAUDE_MID_MODEL`: Modell für Pflanzenfinder und Anleitungen, Standard `claude-sonnet-5-5`.
+   - Pflanzendoktor, Foto-Checks und Fotovergleiche nutzen `CLAUDE_MODEL`.
    - `CRON_SECRET`: eine lange Zufallszeichenkette. Vercel schickt sie beim täglichen Erinnerungs-Job mit, und nur dann läuft er. So kann niemand sonst die Erinnerungen auslösen.
 5. «Deploy» drücken (oder nach dem Ändern der Variablen unter «Deployments» neu veröffentlichen). Nach etwa einer Minute bekommst du eine Adresse wie `https://pflanzenpflege-xyz.vercel.app`.
 6. Die Adresse auf dem Handy öffnen und ein Konto erstellen:

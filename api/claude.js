@@ -8,8 +8,16 @@ import { record } from "../lib/usage.js";
 export const config = { maxDuration: 300 };
 
 const MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
-// Skizzen sind lange SVG-Ausgaben und mit Opus teuer. Haiku zeichnet sie für einen Bruchteil.
-const SKETCH_MODEL = process.env.CLAUDE_SKETCH_MODEL || "claude-haiku-5-5";
+// Günstigere Modelle für einfache oder lange Aufgaben. Der Pflanzendoktor, Foto-Checks und Fotovergleiche bleiben auf MODEL.
+const CHEAP_MODEL = process.env.CLAUDE_CHEAP_MODEL || "claude-haiku-5-5";
+const MID_MODEL = process.env.CLAUDE_MID_MODEL || "claude-sonnet-5-5";
+const FEATURE_MODEL = {
+  sketch: process.env.CLAUDE_SKETCH_MODEL || CHEAP_MODEL, // lange SVG-Ausgaben, mit Opus sehr teuer
+  scan: CHEAP_MODEL,    // Foto-Erkennung
+  profile: CHEAP_MODEL, // Pflegevorschläge
+  finder: MID_MODEL,    // Pflanzenfinder
+  guide: MID_MODEL      // Anleitungen
+};
 const MAX_IMAGES = 4;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
@@ -46,7 +54,7 @@ export default wrap(async function handler(req, res) {
   const json = !!body.json;
   const quick = body.tier === "quick";
   const sketch = body.feature === "sketch";
-  const model = sketch ? SKETCH_MODEL : MODEL;
+  const model = FEATURE_MODEL[body.feature] || MODEL;
 
   const content = [
     ...images.map(im => ({ type: "image", source: { type: "base64", media_type: im.media_type, data: im.data } })),
