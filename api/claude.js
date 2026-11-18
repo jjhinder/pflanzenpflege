@@ -8,6 +8,16 @@ import { record } from "../lib/usage.js";
 export const config = { maxDuration: 300 };
 
 const MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
+// Günstigere Modelle für einfache oder lange Aufgaben. Der Pflanzendoktor, Foto-Checks und Fotovergleiche bleiben auf MODEL.
+const CHEAP_MODEL = process.env.CLAUDE_CHEAP_MODEL || "claude-haiku-5-5";
+const MID_MODEL = process.env.CLAUDE_MID_MODEL || "claude-sonnet-5-5";
+const FEATURE_MODEL = {
+  sketch: process.env.CLAUDE_SKETCH_MODEL || CHEAP_MODEL, // lange SVG-Ausgaben, mit Opus sehr teuer
+  scan: CHEAP_MODEL,    // Foto-Erkennung
+  profile: CHEAP_MODEL, // Pflegevorschläge
+  finder: MID_MODEL,    // Pflanzenfinder
+  guide: MID_MODEL      // Anleitungen
+};
 const MAX_IMAGES = 4;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
@@ -43,6 +53,8 @@ export default wrap(async function handler(req, res) {
   }
   const json = !!body.json;
   const quick = body.tier === "quick";
+  const sketch = body.feature === "sketch";
+  const model = FEATURE_MODEL[body.feature] || MODEL;
 
   const content = [
     ...images.map(im => ({ type: "image", source: { type: "base64", media_type: im.media_type, data: im.data } })),
@@ -51,18 +63,20 @@ export default wrap(async function handler(req, res) {
 
   const client = new Anthropic({ apiKey });
   try {
-    const stream = client.beta.messages.stream({
-      model: MODEL,
-      max_tokens: quick ? 8000 : 32000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: { effort: quick ? "low" : "medium" },
+    const params = {
+      model,
+      max_tokens: sketch ? 20000 : quick ? 8000 : 32000,
+      output_config: { effort: sketch || quick ? "low" : "medium" },
       system: json ? SYSTEM_JSON : SYSTEM_TEXT,
       messages: [{ role: "user", content }]
-    });
+    };
+    // Haiku kennt keinen serverseitigen Ersatz bei Ablehnung, die Opus-Anfragen schon
+    const stream = model.startsWith("claude-haiku")
+      ? client.messages.stream(params)
+      : client.beta.messages.stream({ ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
     const msg = await stream.finalMessage();
     // Kosten mitschreiben (auch bei abgelehnten Anfragen, die Tokens werden trotzdem verrechnet)
-    try { await record(a.hh.id, msg.model || MODEL, msg.usage, String(body.feature || "")); } catch (e) { console.warn("Kosten nicht erfasst:", e && e.message); }
+    try { await record(a.hh.id, msg.model || model, msg.usage, String(body.feature || "")); } catch (e) { console.warn("Kosten nicht erfasst:", e && e.message); }
     if (msg.stop_reason === "refusal") return send(res, 422, { code: "refused" });
     const text = msg.content.filter(b => b.type === "text").map(b => b.text).join("");
     if (!json) return send(res, 200, { text });
